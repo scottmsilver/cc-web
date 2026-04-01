@@ -36,12 +36,23 @@ import libtmux
 
 
 @dataclass
+class QuestionOption:
+    """An option in an AskUserQuestion prompt."""
+
+    label: str
+    description: str = ""
+    index: int = 0  # 1-based index as shown on screen
+
+
+@dataclass
 class Response:
     """A response from Claude Code."""
 
     text: str
     role: str = "assistant"
     raw: dict = field(default_factory=dict)
+    is_question: bool = False
+    questions: list[dict] = field(default_factory=list)  # [{question, options: [QuestionOption]}]
 
 
 @dataclass
@@ -130,6 +141,59 @@ class CCSession:
             time.sleep(1)
         raise TimeoutError(f"Claude Code didn't start within {timeout}s")
 
+    def _parse_question_screen(self) -> Optional[dict]:
+        """
+        Parse the tmux screen for an AskUserQuestion prompt.
+        Returns {question: str, options: [QuestionOption]} or None.
+        """
+        try:
+            pane = self._tmux_session.active_window.active_pane
+            captured = pane.capture_pane(start=-25)
+        except Exception:
+            return None
+
+        lines = [line.rstrip() for line in captured]
+        screen = "\n".join(lines)
+
+        # AskUserQuestion shows "Enter to select" at the bottom
+        if "Enter to select" not in screen:
+            return None
+
+        # Extract the question text — appears above the numbered options
+        question_text = ""
+        options = []
+        option_pattern = re.compile(r"^\s*(?:❯\s*)?(\d+)\.\s+(.+)$")
+
+        in_options = False
+        for line in lines:
+            stripped = line.strip()
+
+            # Detect option lines (1. Label, 2. Label, etc.)
+            match = option_pattern.match(stripped)
+            if match:
+                in_options = True
+                idx = int(match.group(1))
+                label = match.group(2).strip()
+                # Skip meta-options
+                if label.lower() in ("type something.", "chat about this"):
+                    continue
+                options.append(QuestionOption(label=label, index=idx))
+            elif not in_options and stripped and not stripped.startswith(("─", "│", "╭", "╰", "←", "☐", "✔", "Enter")):
+                # Lines before options that aren't UI chrome = question text
+                if stripped and "❯" not in stripped:
+                    question_text = stripped
+
+        if options:
+            return {
+                "question": question_text,
+                "options": options,
+            }
+        return None
+
+    def _is_asking_question(self) -> bool:
+        """Check if Claude is showing an AskUserQuestion prompt."""
+        return self._parse_question_screen() is not None
+
     def _is_tmux_idle(self) -> bool:
         """Check if the tmux pane shows Claude Code's idle prompt (❯)."""
         try:
@@ -193,6 +257,16 @@ class CCSession:
                         raw=last_assistant_raw,
                     )
 
+            # Check if Claude is asking a question (AskUserQuestion)
+            question = self._parse_question_screen()
+            if question:
+                return Response(
+                    text=question["question"],
+                    role="assistant",
+                    is_question=True,
+                    questions=[question],
+                )
+
             # If we have a response AND tmux shows idle AND no new JSONL
             # content for 1 second, we're done
             if last_assistant_text:
@@ -212,6 +286,98 @@ class CCSession:
             role="assistant",
             raw=last_assistant_raw,
         )
+
+    def answer(self, option_index: int = 1) -> Response:
+        """
+        Answer an AskUserQuestion by selecting an option.
+
+        Args:
+            option_index: 1-based index of the option to select.
+                         Default 1 selects the first (usually recommended) option.
+
+        The AskUserQuestion picker uses arrow keys to navigate and Enter to select.
+        Option 1 is pre-selected by default, so Enter alone picks option 1.
+        For other options, we press Down arrow (option_index - 1) times, then Enter.
+
+        After answering, if there are more questions in the same AskUserQuestion
+        batch (tabs at the top like ☐ Markup ☐ Retention), this returns the
+        next question. If all questions are answered, it submits and returns
+        the final response.
+        """
+        if self._tmux_session is None:
+            raise RuntimeError(f"Session {self.id} is destroyed")
+
+        pane = self._tmux_session.active_window.active_pane
+
+        # Navigate to the desired option
+        if option_index > 1:
+            for _ in range(option_index - 1):
+                pane.send_keys("Down", enter=False)
+                time.sleep(0.2)
+
+        # Select it
+        pane.send_keys("", enter=True)
+        time.sleep(1)
+
+        # Check if there's another question, a submit screen, or we're back to idle
+        # Poll for up to 5 seconds
+        for _ in range(10):
+            # Check for another question
+            question = self._parse_question_screen()
+            if question:
+                return Response(
+                    text=question["question"],
+                    role="assistant",
+                    is_question=True,
+                    questions=[question],
+                )
+
+            # Check for submit prompt
+            captured = pane.capture_pane(start=-10)
+            screen = "\n".join(captured)
+            if "Submit" in screen and "Ready to submit" in screen:
+                # Auto-submit
+                pane.send_keys("", enter=True)
+                time.sleep(2)
+                # Now wait for the actual response
+                return self._wait_after_answer()
+
+            # Check if idle (question was the only one, no submit needed)
+            if self._is_tmux_idle():
+                return self._wait_after_answer()
+
+            time.sleep(0.5)
+
+        # Fell through — try waiting for response
+        return self._wait_after_answer()
+
+    def _wait_after_answer(self, timeout: int = 60) -> Response:
+        """Wait for Claude's response after answering a question."""
+        start = time.time()
+        while time.time() - start < timeout:
+            new_lines = self._read_new_lines()
+            for entry in new_lines:
+                if entry.get("type") == "assistant":
+                    text = self._extract_text(entry)
+                    if text:
+                        # Check if idle
+                        time.sleep(1)
+                        if self._is_tmux_idle():
+                            return Response(text=text, role="assistant", raw=entry)
+
+            # Check for another question
+            question = self._parse_question_screen()
+            if question:
+                return Response(
+                    text=question["question"],
+                    role="assistant",
+                    is_question=True,
+                    questions=[question],
+                )
+
+            time.sleep(0.5)
+
+        return Response(text="(timeout waiting for response after answer)", role="assistant")
 
     def send_keys(self, keys: str) -> None:
         """Send raw keys to tmux (for Ctrl+C, Enter, etc.)."""
