@@ -15,10 +15,15 @@ REST API endpoints:
 Gradio UI at /ui — conversational chat interface with file browser.
 """
 
+import hashlib
 import os
+import threading
+import time as _time
+import uuid
+from typing import Optional
 
 import uvicorn
-from cchost import CCHost
+from cchost import CCHost, CCSession
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.responses import Response as HTTPResponse
@@ -200,6 +205,130 @@ def get_conversation(session_id: str):
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"conversation": session.conversation()}
+
+
+# ============================================================
+# OpenAI-Compatible API (for LibreChat integration)
+# ============================================================
+#
+# LibreChat sends standard OpenAI chat/completions requests.
+# We map each conversation to a cchost session using a session
+# ID derived from the conversation. The last user message gets
+# sent to Claude Code.
+
+
+# Session pool for OpenAI-compat conversations
+_openai_sessions: dict[str, str] = {}  # conversation_hash -> cchost session_id
+_openai_lock = threading.Lock()
+
+
+class OAIMessage(BaseModel):
+    role: str
+    content: str
+
+
+class OAIChatRequest(BaseModel):
+    model: str = "claude-code"
+    messages: list[OAIMessage]
+    stream: bool = False
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+
+
+def _get_or_create_oai_session(messages: list[OAIMessage]) -> tuple[CCSession, str]:
+    """
+    Get or create a cchost session for this conversation.
+
+    Strategy: use a hash of the first user message as a stable conversation ID.
+    If the conversation is new, create a session. If it exists, reuse it.
+    """
+    # Use first user message as conversation identifier
+    first_user_msg = next((m.content for m in messages if m.role == "user"), "default")
+    conv_hash = hashlib.md5(first_user_msg.encode()).hexdigest()[:12]
+
+    with _openai_lock:
+        if conv_hash in _openai_sessions:
+            session_id = _openai_sessions[conv_hash]
+            try:
+                return host.get(session_id), conv_hash
+            except KeyError:
+                del _openai_sessions[conv_hash]
+
+        # Create new session
+        session_id = f"lc-{conv_hash}"
+        workdir = os.path.expanduser(f"~/cchost-workspace/{session_id}")
+        try:
+            session = host.create(session_id, working_dir=workdir)
+            _openai_sessions[conv_hash] = session_id
+            return session, conv_hash
+        except ValueError:
+            # Session already exists (race condition)
+            return host.get(session_id), conv_hash
+
+
+@app.get("/v1/models")
+def list_models():
+    """OpenAI-compatible models endpoint."""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "claude-code",
+                "object": "model",
+                "created": 1700000000,
+                "owned_by": "cchost",
+            }
+        ],
+    }
+
+
+@app.post("/v1/chat/completions")
+def chat_completions(req: OAIChatRequest):
+    """
+    OpenAI-compatible chat completions endpoint.
+
+    LibreChat sends the full message history. We extract the last
+    user message and send it to our cchost session.
+    """
+    # Get the last user message
+    last_user_msg = None
+    for msg in reversed(req.messages):
+        if msg.role == "user":
+            last_user_msg = msg.content
+            break
+
+    if not last_user_msg:
+        raise HTTPException(status_code=400, detail="No user message found")
+
+    # Get or create session
+    session, conv_hash = _get_or_create_oai_session(req.messages)
+
+    # Send to Claude Code
+    r = session.send(last_user_msg, timeout=900)
+
+    # Format as OpenAI response
+    response_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+    return {
+        "id": response_id,
+        "object": "chat.completion",
+        "created": int(_time.time()),
+        "model": "claude-code",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": r.text,
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        },
+    }
 
 
 # ============================================================
@@ -411,6 +540,8 @@ def chat_ui():
 
 if __name__ == "__main__":
     print("Starting cchost server...")
-    print("  REST API: http://localhost:8420/docs")
-    print("  Chat UI:  http://localhost:8420/ui")
-    uvicorn.run(app, host="127.0.0.1", port=8420)
+    print("  REST API:  http://localhost:8420/docs")
+    print("  Chat UI:   http://localhost:8420/ui")
+    print("  LibreChat: http://localhost:3080 (run: cd librechat && docker compose up -d)")
+    print("  OpenAI:    http://localhost:8420/v1/chat/completions")
+    uvicorn.run(app, host="0.0.0.0", port=8420)
