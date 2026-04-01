@@ -155,28 +155,29 @@ class CCSession:
         pane = self._tmux_session.active_window.active_pane
         pane.send_keys(message, enter=True)
 
-        # Watch the JSONL for the response
+        # Watch the JSONL for the response.
+        # Claude Code writes a "last-prompt" entry when it's back at the idle prompt.
+        # That's our definitive "done" signal.
         start = time.time()
         last_assistant_text = ""
         last_assistant_raw = {}
-        settle_start = None
-        settle_duration = 2.0  # Wait 2s after last new content before declaring done
+        all_assistant_texts: list[str] = []
 
         while time.time() - start < timeout:
             new_lines = self._read_new_lines()
 
             for entry in new_lines:
                 entry_type = entry.get("type", "")
+
                 if entry_type == "assistant":
                     text = self._extract_text(entry)
                     if text:
                         last_assistant_text = text
                         last_assistant_raw = entry
-                        settle_start = time.time()  # Reset settle timer
+                        all_assistant_texts.append(text)
 
-            # If we have a response and it's been stable, we're done
-            if last_assistant_text and settle_start:
-                if time.time() - settle_start >= settle_duration:
+                elif entry_type == "last-prompt":
+                    # Claude is back at the idle prompt — turn is complete
                     return Response(
                         text=last_assistant_text,
                         role="assistant",
