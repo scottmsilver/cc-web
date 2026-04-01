@@ -1,219 +1,235 @@
 """
 cchost — Claude Code as a hosted service.
 
-Runs Claude Code as a subprocess with --output-format stream-json,
-giving us clean structured JSON for every message, tool use, and response.
-Sessions persist via --resume with session IDs.
+Runs Claude Code interactively in tmux for persistent sessions (sub-agents,
+bash processes, tools all stay alive). Reads responses from Claude's JSONL
+conversation log (written in real-time) instead of parsing the TUI.
 
 Usage:
     from cchost import CCHost
 
     host = CCHost()
     session = host.create("my-audit", working_dir="/data/feb")
-    result = session.send("What is 2+2?")
-    print(result.text)  # "4"
+    response = session.send("What is 2+2?")
+    print(response.text)  # "4"
 
-    # Persistent conversation
-    result2 = session.send("Add 6 to that.")
-    print(result2.text)  # "10"
+    # Persistent — sub-agents and tools stay alive between messages
+    response2 = session.send("/invoice:analyzer .")
+    print(response2.text)
 
-    # Long-running tasks
-    result3 = session.send("/invoice:analyzer .", timeout=900)
-    print(result3.text)
+    # Files created by Claude are accessible
     print(session.files())
-
-    session.destroy()
+    email = session.read_file("feb_draw_email.md")
 """
 
-import enum
+import glob
 import json
 import os
 import re
-import subprocess
-import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-
-class SessionState(enum.Enum):
-    IDLE = "idle"
-    RUNNING = "running"
-    ERROR = "error"
-    DESTROYED = "destroyed"
+import libtmux
 
 
 @dataclass
-class StreamEvent:
-    """A single event from Claude Code's stream-json output."""
+class Response:
+    """A response from Claude Code."""
 
-    type: str  # system, assistant, result, tool_use, tool_result, etc.
-    subtype: str = ""
-    data: dict = field(default_factory=dict)
-    raw: str = ""
-
-    @classmethod
-    def from_line(cls, line: str) -> "StreamEvent":
-        try:
-            d = json.loads(line)
-            return cls(
-                type=d.get("type", "unknown"),
-                subtype=d.get("subtype", ""),
-                data=d,
-                raw=line,
-            )
-        except json.JSONDecodeError:
-            return cls(type="parse_error", raw=line)
-
-
-@dataclass
-class SendResult:
-    """Result of sending a message to Claude Code."""
-
-    text: str  # The assistant's response text
-    session_id: str = ""  # Session ID for resumption
-    duration_ms: int = 0  # How long it took
-    cost_usd: float = 0.0  # Cost of this turn
-    num_turns: int = 0  # Number of agent turns
-    stop_reason: str = ""  # end_turn, tool_use, etc.
-    events: list[StreamEvent] = field(default_factory=list)  # All stream events
-    is_error: bool = False
-    error_message: str = ""
-
-    @property
-    def tool_uses(self) -> list[dict]:
-        """Extract tool use events from the stream."""
-        return [e.data for e in self.events if e.type == "tool_use"]
+    text: str
+    role: str = "assistant"
+    raw: dict = field(default_factory=dict)
 
 
 @dataclass
 class CCSession:
-    """A persistent Claude Code session."""
+    """A persistent Claude Code session running in tmux."""
 
     id: str
     working_dir: str
-    session_id: Optional[str] = None  # Claude Code's internal session ID (for --resume)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    state: SessionState = SessionState.IDLE
-    history: list[SendResult] = field(default_factory=list)
+    _tmux_session: Optional[libtmux.Session] = field(default=None, repr=False)
     _host: Optional["CCHost"] = field(default=None, repr=False)
+    _jsonl_path: Optional[str] = field(default=None, repr=False)
+    _last_line_count: int = field(default=0, repr=False)
 
-    def send(
-        self,
-        message: str,
-        timeout: int = 300,
-        allowed_tools: Optional[str] = None,
-    ) -> SendResult:
-        """
-        Send a message to Claude Code and wait for the response.
+    def _find_jsonl(self) -> Optional[str]:
+        """Find the JSONL conversation log for this session."""
+        # Claude stores at ~/.claude/projects/{slug}/{session_id}.jsonl
+        slug = self.working_dir.replace("/", "-").lstrip("-")
+        project_dir = os.path.expanduser(f"~/.claude/projects/-{slug}")
+        if os.path.isdir(project_dir):
+            files = glob.glob(os.path.join(project_dir, "*.jsonl"))
+            if files:
+                # Return the most recently modified one
+                return max(files, key=os.path.getmtime)
+        return None
 
-        Args:
-            message: The prompt to send
-            timeout: Max seconds to wait
-            allowed_tools: Comma-separated tool names (default: all tools)
+    def _read_new_lines(self) -> list[dict]:
+        """Read new lines from the JSONL since last check."""
+        if not self._jsonl_path:
+            self._jsonl_path = self._find_jsonl()
+        if not self._jsonl_path or not os.path.exists(self._jsonl_path):
+            return []
+
+        with open(self._jsonl_path, "r") as f:
+            lines = f.readlines()
+
+        new_lines = lines[self._last_line_count :]
+        self._last_line_count = len(lines)
+
+        parsed = []
+        for line in new_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+        return parsed
+
+    def _extract_text(self, msg_data: dict) -> str:
+        """Extract text content from a JSONL message entry."""
+        message = msg_data.get("message", {})
+        if not isinstance(message, dict):
+            return ""
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            return "\n".join(parts)
+        return ""
+
+    def _wait_for_ready(self, timeout: int = 30) -> None:
+        """Wait for Claude Code to start and accept the trust prompt."""
+        # Wait for tmux pane to have content
+        pane = self._tmux_session.active_window.active_pane
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                captured = "\n".join(pane.capture_pane(start=-15))
+                if "I trust this folder" in captured or "Enter to confirm" in captured:
+                    pane.send_keys("", enter=True)  # Accept trust prompt
+                    time.sleep(2)
+                    continue
+                if "❯" in captured:
+                    # Drain any existing JSONL lines from startup
+                    self._jsonl_path = self._find_jsonl()
+                    self._read_new_lines()
+                    return
+            except Exception:
+                pass
+            time.sleep(1)
+        raise TimeoutError(f"Claude Code didn't start within {timeout}s")
+
+    def send(self, message: str, timeout: int = 600) -> Response:
         """
-        if self.state == SessionState.DESTROYED:
+        Send a message and wait for Claude's response.
+
+        Works by:
+        1. Recording current JSONL line count
+        2. Typing the message into tmux
+        3. Watching the JSONL for new assistant messages
+        4. Detecting "done" when an assistant message appears followed by
+           no new messages for a settling period
+        """
+        if self._tmux_session is None:
             raise RuntimeError(f"Session {self.id} is destroyed")
 
-        self.state = SessionState.RUNNING
+        # Record where we are in the JSONL
+        if not self._jsonl_path:
+            self._jsonl_path = self._find_jsonl()
+        if self._jsonl_path:
+            with open(self._jsonl_path, "r") as f:
+                self._last_line_count = len(f.readlines())
 
-        # Build the claude command
-        cmd = [
-            "claude",
-            "-p",
-            message,
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--dangerously-skip-permissions",
-        ]
+        # Type the message into Claude Code
+        pane = self._tmux_session.active_window.active_pane
+        pane.send_keys(message, enter=True)
 
-        if self.session_id:
-            cmd.extend(["--resume", self.session_id])
+        # Watch the JSONL for the response
+        start = time.time()
+        last_assistant_text = ""
+        last_assistant_raw = {}
+        settle_start = None
+        settle_duration = 2.0  # Wait 2s after last new content before declaring done
 
-        if allowed_tools:
-            cmd.extend(["--allowedTools", allowed_tools])
+        while time.time() - start < timeout:
+            new_lines = self._read_new_lines()
 
-        # Run claude as a subprocess
-        try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=self.working_dir,
-            )
-        except subprocess.TimeoutExpired:
-            self.state = SessionState.ERROR
-            return SendResult(
-                text="",
-                is_error=True,
-                error_message=f"Timeout after {timeout}s",
-            )
+            for entry in new_lines:
+                entry_type = entry.get("type", "")
+                if entry_type == "assistant":
+                    text = self._extract_text(entry)
+                    if text:
+                        last_assistant_text = text
+                        last_assistant_raw = entry
+                        settle_start = time.time()  # Reset settle timer
 
-        # Parse the stream-json output
-        events = []
-        result_text = ""
-        result_session_id = ""
-        result_duration = 0
-        result_cost = 0.0
-        result_turns = 0
-        result_stop = ""
-        is_error = False
-        error_msg = ""
+            # If we have a response and it's been stable, we're done
+            if last_assistant_text and settle_start:
+                if time.time() - settle_start >= settle_duration:
+                    return Response(
+                        text=last_assistant_text,
+                        role="assistant",
+                        raw=last_assistant_raw,
+                    )
 
-        for line in proc.stdout.strip().split("\n"):
-            if not line.strip():
-                continue
-            event = StreamEvent.from_line(line)
-            events.append(event)
+            time.sleep(0.5)
 
-            if event.type == "result":
-                result_text = event.data.get("result", "")
-                result_session_id = event.data.get("session_id", "")
-                result_duration = event.data.get("duration_ms", 0)
-                result_cost = event.data.get("total_cost_usd", 0.0)
-                result_turns = event.data.get("num_turns", 0)
-                result_stop = event.data.get("stop_reason", "")
-                is_error = event.data.get("is_error", False)
-                if is_error:
-                    error_msg = result_text
-
-            elif event.type == "assistant":
-                # Capture assistant message text (may come in chunks)
-                content = event.data.get("message", {}).get("content", [])
-                if isinstance(content, list):
-                    for block in content:
-                        if block.get("type") == "text":
-                            # This is a partial or full text block
-                            pass  # result event has the final text
-
-        # Update session state
-        if result_session_id:
-            self.session_id = result_session_id
-        self.state = SessionState.ERROR if is_error else SessionState.IDLE
-
-        result = SendResult(
-            text=result_text,
-            session_id=result_session_id,
-            duration_ms=result_duration,
-            cost_usd=result_cost,
-            num_turns=result_turns,
-            stop_reason=result_stop,
-            events=events,
-            is_error=is_error,
-            error_message=error_msg,
+        # Timeout — return whatever we have
+        return Response(
+            text=last_assistant_text or "(timeout — no response captured)",
+            role="assistant",
+            raw=last_assistant_raw,
         )
-        self.history.append(result)
-        return result
+
+    def send_keys(self, keys: str) -> None:
+        """Send raw keys to tmux (for Ctrl+C, Enter, etc.)."""
+        if self._tmux_session is None:
+            raise RuntimeError(f"Session {self.id} is destroyed")
+        pane = self._tmux_session.active_window.active_pane
+        pane.send_keys(keys, enter=False)
+
+    def interrupt(self) -> None:
+        """Send Ctrl+C (escape) to Claude Code."""
+        self.send_keys("C-c")
+
+    def conversation(self) -> list[dict]:
+        """Return the full conversation history from the JSONL."""
+        if not self._jsonl_path:
+            self._jsonl_path = self._find_jsonl()
+        if not self._jsonl_path or not os.path.exists(self._jsonl_path):
+            return []
+        entries = []
+        with open(self._jsonl_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    t = entry.get("type", "")
+                    if t in ("user", "assistant"):
+                        text = self._extract_text(entry)
+                        if text:
+                            entries.append({"role": t, "text": text})
+                except json.JSONDecodeError:
+                    pass
+        return entries
 
     def files(self) -> list[str]:
-        """List files in the working directory."""
+        """List files in the working directory (excluding hidden)."""
         result = []
         for root, dirs, filenames in os.walk(self.working_dir):
-            # Skip hidden dirs
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for f in filenames:
                 if f.startswith("."):
@@ -233,29 +249,55 @@ class CCSession:
         return resolved.read_bytes()
 
     def destroy(self) -> None:
-        """Mark session as destroyed."""
-        self.state = SessionState.DESTROYED
+        """Kill the tmux session and clean up."""
+        if self._tmux_session is not None:
+            try:
+                self._tmux_session.kill()
+            except Exception:
+                pass
+            self._tmux_session = None
         if self._host and self.id in self._host._sessions:
             del self._host._sessions[self.id]
 
 
 class CCHost:
     """
-    Manages Claude Code sessions.
+    Manages persistent Claude Code sessions.
 
-    Each session runs claude -p with --resume for conversation persistence.
-    No tmux, no TUI — just structured JSON over subprocess.
+    Each session runs Claude Code interactively in tmux. Responses are
+    read from Claude's JSONL conversation log, not from TUI capture.
     """
 
-    def __init__(self, max_sessions: int = 10):
+    def __init__(self, max_sessions: int = 5, history_limit: int = 50000):
+        self._server = libtmux.Server()
         self._sessions: dict[str, CCSession] = {}
         self._max_sessions = max_sessions
+        self._history_limit = history_limit
+        self._rediscover()
+
+    def _rediscover(self) -> None:
+        """Find existing cchost-* tmux sessions."""
+        for tmux_session in self._server.sessions:
+            name = tmux_session.name
+            if name.startswith("cchost-"):
+                session_id = name[len("cchost-") :]
+                if session_id not in self._sessions:
+                    pane = tmux_session.active_window.active_pane
+                    workdir = pane.current_path or "/tmp"
+                    self._sessions[session_id] = CCSession(
+                        id=session_id,
+                        working_dir=workdir,
+                        _tmux_session=tmux_session,
+                        _host=self,
+                    )
 
     def create(
         self,
         session_id: str,
         working_dir: str = "/tmp",
+        wait_ready: bool = True,
     ) -> CCSession:
+        """Create a new Claude Code session."""
         if session_id in self._sessions:
             raise ValueError(f"Session {session_id} already exists")
         if len(self._sessions) >= self._max_sessions:
@@ -264,13 +306,26 @@ class CCHost:
             raise ValueError(f"Invalid session ID: {session_id}")
 
         os.makedirs(working_dir, exist_ok=True)
+        tmux_name = f"cchost-{session_id}"
+
+        tmux_session = self._server.new_session(
+            session_name=tmux_name,
+            start_directory=working_dir,
+            window_command="claude --dangerously-skip-permissions",
+        )
+        tmux_session.set_option("history-limit", self._history_limit)
 
         session = CCSession(
             id=session_id,
             working_dir=working_dir,
+            _tmux_session=tmux_session,
             _host=self,
         )
         self._sessions[session_id] = session
+
+        if wait_ready:
+            session._wait_for_ready()
+
         return session
 
     def get(self, session_id: str) -> CCSession:
@@ -282,9 +337,8 @@ class CCHost:
         return list(self._sessions.values())
 
     def destroy(self, session_id: str) -> None:
-        session = self.get(session_id)
-        session.destroy()
+        self.get(session_id).destroy()
 
     def destroy_all(self) -> None:
-        for session_id in list(self._sessions.keys()):
-            self.destroy(session_id)
+        for sid in list(self._sessions.keys()):
+            self.destroy(sid)
