@@ -167,6 +167,7 @@ class CCSession:
     _screen: Optional[pyte.Screen] = field(default=None, repr=False)
     _stream: Optional[pyte.Stream] = field(default=None, repr=False)
     _rendered_history: list = field(default_factory=list, repr=False)  # snapshots of rendered screens
+    _turn_snapshot_start: int = field(default=0, repr=False)  # index into _rendered_history where current turn began
 
     @property
     def status(self) -> SessionState:
@@ -183,6 +184,8 @@ class CCSession:
         """Send a message to Claude Code. Like typing and hitting Enter."""
         if self._tmux_session is None:
             raise RuntimeError(f"Session {self.id} is destroyed")
+        # Mark the start of a new turn for response extraction
+        self._turn_snapshot_start = len(self._rendered_history)
         pane = self._tmux_session.active_window.active_pane
         pane.send_keys(message, enter=True)
 
@@ -336,71 +339,141 @@ class CCSession:
 
     def response(self) -> str:
         """
-        Extract Claude's latest response text from the rendered terminal.
-        Uses pyte to render the actual screen state, then parses conversation turns.
+        Extract Claude's latest response text.
+
+        Strategy: scan ALL snapshots (captured during wait_until_idle polling)
+        plus the current screen. The response text appears transiently between
+        the user's prompt and the idle prompt redraw, so we need the snapshot
+        history to catch it.
         """
-        lines = self.render()
-        if not lines:
+        # Only scan snapshots from the current turn (since last send())
+        screens = list(self._rendered_history[self._turn_snapshot_start :])
+        current = self.render_full()
+        if current:
+            screens.append(current)
+
+        if not screens:
             return ""
 
-        # Find conversation turns in the rendered output
-        # Pattern: ❯ [user prompt] → [response lines] → ❯ (next prompt)
-        turns = []
-        current_response: list[str] = []
-        in_response = False
+        # Parse each screen for conversation turns, collect all responses
+        all_responses: list[str] = []
 
-        for line in lines:
-            stripped = line.strip()
+        for screen_text in screens:
+            lines = screen_text.split("\n")
+            current_response: list[str] = []
+            in_response = False
 
-            # User prompt line (contains ❯ with text after it)
-            if "❯" in stripped:
-                after = stripped.split("❯", 1)[1].strip() if "❯" in stripped else ""
-                if after and len(after) > 2:
-                    if current_response and in_response:
-                        turns.append("\n".join(current_response))
-                    current_response = []
-                    in_response = True
+            for line in lines:
+                stripped = line.strip()
+
+                # User prompt line (contains ❯ with text after it)
+                if "❯" in stripped:
+                    after = stripped.split("❯", 1)[1].strip()
+                    if after and len(after) > 2:
+                        if current_response and in_response:
+                            resp = "\n".join(current_response).strip()
+                            if resp:
+                                all_responses.append(resp)
+                        current_response = []
+                        in_response = True
+                        continue
+                    elif stripped.strip() == "❯":
+                        if current_response and in_response:
+                            resp = "\n".join(current_response).strip()
+                            if resp:
+                                all_responses.append(resp)
+                        current_response = []
+                        in_response = False
+                        continue
+
+                # Skip UI chrome
+                if any(stripped.startswith(c) for c in ["─", "│", "╭", "╰", "⏵"]):
                     continue
-                elif stripped.strip() == "❯":
-                    if current_response and in_response:
-                        turns.append("\n".join(current_response))
-                    current_response = []
-                    in_response = False
+
+                # Skip thinking/spinner lines
+                _THINKING_WORDS = [
+                    "Cerebrating",
+                    "Noodling",
+                    "Transmuting",
+                    "Pondering",
+                    "Cogitating",
+                    "Ruminating",
+                    "Whirring",
+                    "Scampering",
+                    "Musing",
+                    "Dreaming",
+                    "Germinating",
+                    "Finagling",
+                    "Brainstorming",
+                    "Percolating",
+                    "Considering",
+                    "Unfurling",
+                    "Concocting",
+                    "Composing",
+                    "Crafting",
+                    "Assembling",
+                    "Formulating",
+                    "Synthesizing",
+                    "Weaving",
+                    "Brewing",
+                    "Conjuring",
+                    "Manifesting",
+                    "Scheming",
+                    "Plotting",
+                    "Devising",
+                    "Hatching",
+                    "Imagining",
+                    "Calculating",
+                    "Computing",
+                    "Processing",
+                    "Analyzing",
+                    "Thinking",
+                    "Working",
+                    "Generating",
+                    "Building",
+                    "Creating",
+                    "Designing",
+                    "Planning",
+                    "Preparing",
+                ]
+                if any(w in stripped for w in _THINKING_WORDS):
+                    continue
+                # Skip lines that are just spinner chars with a word
+                if stripped and stripped[0] in "✻✶✢·*" and len(stripped) < 30:
+                    skip = False
+                    for w in _THINKING_WORDS:
+                        if w in stripped:
+                            skip = True
+                            break
+                    if skip:
+                        continue
+
+                # Skip tip lines
+                if stripped.startswith("⎿"):
                     continue
 
-            # Skip UI chrome
-            if any(stripped.startswith(c) for c in ["─", "│", "╭", "╰", "⏵"]):
-                continue
+                if in_response and stripped:
+                    # Strip leading bullet markers Claude uses for responses
+                    clean = stripped
+                    if clean.startswith("● "):
+                        clean = clean[2:]
+                    current_response.append(clean)
 
-            # Skip spinner/thinking indicators
-            thinking_words = [
-                "Cerebrating",
-                "Noodling",
-                "Transmuting",
-                "Pondering",
-                "Cogitating",
-                "Ruminating",
-                "Whirring",
-                "Scampering",
-                "Musing",
-                "Dreaming",
-            ]
-            spinner_prefixes = ["✻", "✶", "✢", "·", "*", "●"]
-            is_thinking = False
-            for w in thinking_words:
-                if w in stripped:
-                    is_thinking = True
-                    break
-            if is_thinking:
-                continue
+            if current_response and in_response:
+                resp = "\n".join(current_response).strip()
+                if resp:
+                    all_responses.append(resp)
 
-            if in_response and stripped:
-                current_response.append(stripped)
+        # Return the last unique non-empty response
+        # Deduplicate since the same response may appear in multiple snapshots
+        seen = set()
+        unique = []
+        for r in all_responses:
+            if r not in seen:
+                seen.add(r)
+                unique.append(r)
 
-        if current_response and in_response:
-            turns.append("\n".join(current_response))
-
-        return turns[-1].strip() if turns else ""
+        return unique[-1] if unique else ""
 
     def interrupt(self) -> None:
         """Send Ctrl+C to Claude Code."""
