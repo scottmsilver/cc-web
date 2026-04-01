@@ -130,16 +130,27 @@ class CCSession:
             time.sleep(1)
         raise TimeoutError(f"Claude Code didn't start within {timeout}s")
 
+    def _is_tmux_idle(self) -> bool:
+        """Check if the tmux pane shows Claude Code's idle prompt (❯)."""
+        try:
+            pane = self._tmux_session.active_window.active_pane
+            captured = pane.capture_pane(start=-10)
+            for line in captured:
+                if line.strip() == "❯":
+                    return True
+            return False
+        except Exception:
+            return False
+
     def send(self, message: str, timeout: int = 600) -> Response:
         """
         Send a message and wait for Claude's response.
 
-        Works by:
-        1. Recording current JSONL line count
-        2. Typing the message into tmux
-        3. Watching the JSONL for new assistant messages
-        4. Detecting "done" when an assistant message appears followed by
-           no new messages for a settling period
+        Done detection strategy (from empirical testing):
+        1. Watch JSONL for new assistant messages (response content)
+        2. After seeing an assistant message, check tmux for ❯ idle prompt
+        3. Once both conditions met (have response + tmux idle), return
+        4. Also accept last-prompt JSONL entry as a done signal (arrives late but definitive)
         """
         if self._tmux_session is None:
             raise RuntimeError(f"Session {self.id} is destroyed")
@@ -155,29 +166,38 @@ class CCSession:
         pane = self._tmux_session.active_window.active_pane
         pane.send_keys(message, enter=True)
 
-        # Watch the JSONL for the response.
-        # Claude Code writes a "last-prompt" entry when it's back at the idle prompt.
-        # That's our definitive "done" signal.
+        # Watch for response + idle signal
         start = time.time()
         last_assistant_text = ""
         last_assistant_raw = {}
-        all_assistant_texts: list[str] = []
+        last_new_content_time = time.time()
 
         while time.time() - start < timeout:
             new_lines = self._read_new_lines()
 
             for entry in new_lines:
                 entry_type = entry.get("type", "")
+                last_new_content_time = time.time()
 
                 if entry_type == "assistant":
                     text = self._extract_text(entry)
                     if text:
                         last_assistant_text = text
                         last_assistant_raw = entry
-                        all_assistant_texts.append(text)
 
                 elif entry_type == "last-prompt":
-                    # Claude is back at the idle prompt — turn is complete
+                    # Definitive done signal (rare but authoritative)
+                    return Response(
+                        text=last_assistant_text,
+                        role="assistant",
+                        raw=last_assistant_raw,
+                    )
+
+            # If we have a response AND tmux shows idle AND no new JSONL
+            # content for 1 second, we're done
+            if last_assistant_text:
+                time_since_content = time.time() - last_new_content_time
+                if time_since_content >= 1.0 and self._is_tmux_idle():
                     return Response(
                         text=last_assistant_text,
                         role="assistant",
@@ -284,7 +304,7 @@ class CCHost:
                 session_id = name[len("cchost-") :]
                 if session_id not in self._sessions:
                     pane = tmux_session.active_window.active_pane
-                    workdir = pane.current_path or "/tmp"
+                    workdir = pane.pane_current_path or "/tmp"
                     self._sessions[session_id] = CCSession(
                         id=session_id,
                         working_dir=workdir,
