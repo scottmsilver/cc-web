@@ -16,6 +16,7 @@ Gradio UI at /ui — conversational chat interface with file browser.
 """
 
 import hashlib
+import json
 import os
 import threading
 import time as _time
@@ -27,6 +28,7 @@ from cchost import CCHost, CCSession
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.responses import Response as HTTPResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 # ============================================================
@@ -286,9 +288,7 @@ def list_models():
 def chat_completions(req: OAIChatRequest):
     """
     OpenAI-compatible chat completions endpoint.
-
-    LibreChat sends the full message history. We extract the last
-    user message and send it to our cchost session.
+    Supports both streaming (SSE) and non-streaming responses.
     """
     # Get the last user message
     last_user_msg = None
@@ -303,32 +303,82 @@ def chat_completions(req: OAIChatRequest):
     # Get or create session
     session, conv_hash = _get_or_create_oai_session(req.messages)
 
-    # Send to Claude Code
+    # Send to Claude Code (blocking)
     r = session.send(last_user_msg, timeout=900)
 
-    # Format as OpenAI response
     response_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-    return {
-        "id": response_id,
-        "object": "chat.completion",
-        "created": int(_time.time()),
-        "model": "claude-code",
-        "choices": [
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": r.text,
-                },
-                "finish_reason": "stop",
+
+    if req.stream:
+        # SSE streaming response — send the full response as a single chunk
+        # (we don't have real streaming from Claude Code, but LibreChat needs SSE format)
+        def generate_sse():
+            # Send the content as one chunk
+            chunk = {
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": int(_time.time()),
+                "model": "claude-code",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "content": r.text,
+                        },
+                        "finish_reason": None,
+                    }
+                ],
             }
-        ],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        },
-    }
+            yield f"data: {json.dumps(chunk)}\n\n"
+
+            # Send the finish chunk
+            finish_chunk = {
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": int(_time.time()),
+                "model": "claude-code",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(finish_chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            generate_sse(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+    else:
+        # Non-streaming response
+        return {
+            "id": response_id,
+            "object": "chat.completion",
+            "created": int(_time.time()),
+            "model": "claude-code",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": r.text,
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+        }
 
 
 # ============================================================
