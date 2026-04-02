@@ -15,11 +15,13 @@ export function ChatInput({
   disabled,
   sessionId,
   onFilesUploaded,
+  ensureSession,
 }: {
   onSend: (message: string) => void;
   disabled: boolean;
   sessionId: string | null;
   onFilesUploaded?: (files: string[]) => void;
+  ensureSession?: () => Promise<string>;
 }) {
   const [input, setInput] = useState("");
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -29,13 +31,18 @@ export function ChatInput({
   const textInputRef = useRef<HTMLInputElement>(null);
 
   const uploadFiles = async (files: File[]): Promise<string[]> => {
-    if (!sessionId) return [];
+    // Ensure we have a session before uploading
+    let sid = sessionId;
+    if (!sid && ensureSession) {
+      sid = await ensureSession();
+    }
+    if (!sid) return [];
     setUploading(true);
     const formData = new FormData();
     files.forEach((f) => formData.append(f.name, f));
     try {
       const res = await fetch(
-        `${CCHOST_API}/api/sessions/${sessionId}/upload`,
+        `${CCHOST_API}/api/sessions/${sid}/upload`,
         { method: "POST", body: formData }
       );
       const data = await res.json();

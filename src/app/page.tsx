@@ -717,6 +717,7 @@ export default function Chat() {
               onSend={sendMessage}
               disabled={isLoading}
               sessionId={activeSession}
+              ensureSession={ensureSession}
               onFilesUploaded={() => activeSession && fetchFiles(activeSession)}
             />
           </div>
