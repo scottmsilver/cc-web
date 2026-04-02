@@ -33,7 +33,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 import libtmux
-
 from progress import derive_progress_snapshot, normalize_jsonl_entries
 
 
@@ -289,11 +288,20 @@ class CCSession:
         pane = self._tmux_session.active_window.active_pane
         pane.send_keys(message, enter=True)
 
-        # Watch for response + idle signal
+        # Watch for response + idle signal.
+        # Key insight: Claude's multi-step analysis produces intermediate
+        # "idle" states between tool calls. We must NOT return during these.
+        # Only return when:
+        # - We have assistant text
+        # - The last assistant entry has NO tool_use blocks (not mid-chain)
+        # - tmux shows idle (❯)
+        # - No new JSONL content for 2 seconds
         start = time.time()
         last_assistant_text = ""
         last_assistant_raw = {}
         last_new_content_time = time.time()
+        has_pending_tool_use = False
+        saw_any_tool_use = False  # True if this turn involved any tools
 
         while time.time() - start < timeout:
             new_lines = self._read_new_lines()
@@ -304,19 +312,45 @@ class CCSession:
 
                 if entry_type == "assistant":
                     text = self._extract_text(entry)
-                    if text:
+                    content = entry.get("message", {}).get("content", [])
+                    entry_has_tools = False
+
+                    if isinstance(content, list):
+                        entry_has_tools = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content)
+
+                    if entry_has_tools:
+                        # This entry dispatched tools — Claude will continue
+                        has_pending_tool_use = True
+                        saw_any_tool_use = True
+                    else:
+                        has_pending_tool_use = False
+
+                    # Only update the "final" response text when the entry
+                    # has text and does NOT also dispatch tools. Entries with
+                    # both text and tool_use are intermediate status messages
+                    # ("Let me read the remaining pages" + Read tool).
+                    if text and not entry_has_tools:
                         last_assistant_text = text
                         last_assistant_raw = entry
 
+                elif entry_type == "user":
+                    # A user entry with tool_result means a tool completed.
+                    # Claude will produce another assistant turn — keep waiting.
+                    content = entry.get("message", {}).get("content", [])
+                    if isinstance(content, list) and any(
+                        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+                    ):
+                        # Tool resolved, but Claude hasn't spoken yet
+                        has_pending_tool_use = False
+
                 elif entry_type == "last-prompt":
-                    # Definitive done signal (rare but authoritative)
                     return Response(
                         text=last_assistant_text,
                         role="assistant",
                         raw=last_assistant_raw,
                     )
 
-            # Check if Claude is asking a question (AskUserQuestion)
+            # Check for AskUserQuestion
             question = self._parse_question_screen()
             if question:
                 return Response(
@@ -326,16 +360,50 @@ class CCSession:
                     questions=[question],
                 )
 
-            # If we have a response AND tmux shows idle AND no new JSONL
-            # content for 1 second, we're done
-            if last_assistant_text:
+            # Done detection: require STABLE idle.
+            # Check tmux idle, then wait, then check again.
+            # If Claude is between tool calls, the idle will disappear
+            # when the next tool starts. If Claude is truly done, idle
+            # persists across both checks.
+            if last_assistant_text and not has_pending_tool_use:
                 time_since_content = time.time() - last_new_content_time
-                if time_since_content >= 1.0 and self._is_tmux_idle():
-                    return Response(
-                        text=last_assistant_text,
-                        role="assistant",
-                        raw=last_assistant_raw,
-                    )
+                settle_time = 5.0 if saw_any_tool_use else 2.0
+                if time_since_content >= settle_time and self._is_tmux_idle():
+                    # First idle check passed. Wait 3 more seconds and
+                    # verify no new JSONL lines appeared and tmux is still idle.
+                    time.sleep(3.0)
+                    recheck_lines = self._read_new_lines()
+                    new_content_during_settle = False
+                    for entry in recheck_lines:
+                        et = entry.get("type", "")
+                        last_new_content_time = time.time()
+                        new_content_during_settle = True
+                        if et == "assistant":
+                            text = self._extract_text(entry)
+                            content = entry.get("message", {}).get("content", [])
+                            entry_has_tools = isinstance(content, list) and any(
+                                isinstance(b, dict) and b.get("type") == "tool_use" for b in content
+                            )
+                            if entry_has_tools:
+                                has_pending_tool_use = True
+                            elif text:
+                                last_assistant_text = text
+                                last_assistant_raw = entry
+                        elif et == "user":
+                            content = entry.get("message", {}).get("content", [])
+                            if isinstance(content, list) and any(
+                                isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+                            ):
+                                has_pending_tool_use = False
+
+                    if not new_content_during_settle and self._is_tmux_idle():
+                        # Truly done — no new content during settle and still idle
+                        return Response(
+                            text=last_assistant_text,
+                            role="assistant",
+                            raw=last_assistant_raw,
+                        )
+                    # Otherwise, new content arrived or idle disappeared — keep looping
 
             time.sleep(0.5)
 
