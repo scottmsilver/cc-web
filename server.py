@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field
 # Global host instance
 # ============================================================
 
-host = CCHost(max_sessions=5)
+host = CCHost(max_sessions=20)
 
 
 # ============================================================
@@ -134,12 +134,8 @@ def _utcnow_iso() -> str:
 def _serialize_question(question: dict) -> dict:
     return {
         "question": question.get("question", ""),
-        "options": [
-            {"label": option.label, "index": option.index}
-            for option in question.get("options", [])
-        ],
+        "options": [{"label": option.label, "index": option.index} for option in question.get("options", [])],
     }
-
 
 
 def _serialize_send_response(response) -> dict:
@@ -149,7 +145,6 @@ def _serialize_send_response(response) -> dict:
         "questions": [_serialize_question(question) for question in response.questions],
         "role": response.role,
     }
-
 
 
 def _serialize_run(run: RunState) -> dict:
@@ -164,7 +159,6 @@ def _serialize_run(run: RunState) -> dict:
         "waiting_for_input": run.waiting_for_input,
         "current_question": run.current_question,
     }
-
 
 
 def _merge_progress_snapshot(session_id: str, run_id: Optional[str], snapshot_data: dict) -> dict:
@@ -195,13 +189,11 @@ def _merge_progress_snapshot(session_id: str, run_id: Optional[str], snapshot_da
         return merged_snapshot
 
 
-
 def _get_session_or_404(session_id: str):
     try:
         return host.get(session_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
-
 
 
 def _get_run_for_session(session_id: str) -> Optional[RunState]:
@@ -212,10 +204,8 @@ def _get_run_for_session(session_id: str) -> Optional[RunState]:
         return _runs.get(run_id)
 
 
-
 def _is_active_run(run: Optional[RunState]) -> bool:
     return run is not None and run.status in {"pending", "running", "waiting_for_input"}
-
 
 
 def _release_session_slot(session_id: str) -> None:
@@ -223,11 +213,9 @@ def _release_session_slot(session_id: str) -> None:
         _session_slots.discard(session_id)
 
 
-
 def _clear_progress_history(session_id: str) -> None:
     with _runs_lock:
         _progress_history.pop(session_id, None)
-
 
 
 def _get_current_question(session) -> Optional[dict]:
@@ -237,7 +225,6 @@ def _get_current_question(session) -> Optional[dict]:
         if isinstance(question, dict):
             return question
     return None
-
 
 
 def _option_indexes_from_question(question: dict) -> list[int]:
@@ -251,7 +238,6 @@ def _option_indexes_from_question(question: dict) -> list[int]:
         if isinstance(idx, int):
             indexes.append(idx)
     return sorted(set(indexes))
-
 
 
 def _validate_option_index(question: dict, option_index: int) -> None:
@@ -268,7 +254,6 @@ def _validate_option_index(question: dict, option_index: int) -> None:
         raise HTTPException(status_code=400, detail=detail)
 
 
-
 def _get_run_payload_for_session(session_id: str) -> Optional[dict]:
     with _runs_lock:
         run_id = _session_runs.get(session_id)
@@ -278,7 +263,6 @@ def _get_run_payload_for_session(session_id: str) -> Optional[dict]:
         if run is None:
             return None
         return _serialize_run(run)
-
 
 
 def _require_no_active_run(session_id: str) -> None:
@@ -291,7 +275,6 @@ def _require_no_active_run(session_id: str) -> None:
         _progress_history.pop(session_id, None)
         if run_id and run is not None and not _is_active_run(run):
             _session_runs.pop(session_id, None)
-
 
 
 def _claim_waiting_run_for_answer(session_id: str, option_index: int) -> RunState:
@@ -311,7 +294,6 @@ def _claim_waiting_run_for_answer(session_id: str, option_index: int) -> RunStat
         return run
 
 
-
 def _apply_response_to_run(run: RunState, response) -> None:
     run.result = _serialize_send_response(response)
     if response.is_question and response.questions:
@@ -327,14 +309,12 @@ def _apply_response_to_run(run: RunState, response) -> None:
     run.finished_at = _utcnow_iso()
 
 
-
 def _mark_run_running(run: RunState) -> None:
     run.status = "running"
     run.finished_at = None
     run.error = None
     run.waiting_for_input = False
     run.current_question = None
-
 
 
 def _execute_send_run(run_id: str, session, message: str, timeout: int) -> None:
@@ -364,7 +344,6 @@ def _execute_send_run(run_id: str, session, message: str, timeout: int) -> None:
         _apply_response_to_run(run, response)
         if run.status in {"completed", "error"}:
             _session_slots.discard(run.session_id)
-
 
 
 def _continue_run_with_answer(run: RunState, session, option_index: int):
