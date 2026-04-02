@@ -100,7 +100,7 @@ export function ChatInput({
 
   return (
     <div
-      className={`border-t border-zinc-800 ${dragOver ? "bg-rose-950/20 border-rose-500/50" : ""}`}
+      className={`border-t border-[#3a3a3a] ${dragOver ? "bg-[#2a2520] border-[#d77757]/50" : ""}`}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
@@ -111,15 +111,15 @@ export function ChatInput({
           {pendingFiles.map((f) => (
             <span
               key={f.name}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-800 border border-zinc-700 text-xs"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#232323] border border-[#3a3a3a] text-xs"
             >
               <span className="opacity-60">
                 {f.name.endsWith(".pdf") ? "📄" : f.name.endsWith(".xlsx") ? "📊" : "📎"}
               </span>
-              <span className="text-zinc-300 max-w-[200px] truncate">{f.name}</span>
+              <span className="text-[#e8e4df] max-w-[200px] truncate">{f.name}</span>
               <button
                 onClick={() => removeFile(f.name)}
-                className="text-zinc-500 hover:text-rose-400 ml-0.5"
+                className="text-[#8a8580] hover:text-[#d77757] ml-0.5"
               >
                 ×
               </button>
@@ -130,15 +130,16 @@ export function ChatInput({
 
       {/* Input row */}
       <form onSubmit={handleSubmit} className="p-3 flex items-center gap-2">
-        {/* Attach button */}
+        {/* Attach button — always clickable */}
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          disabled={!sessionId}
-          className="flex items-center justify-center w-9 h-9 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-zinc-600 text-zinc-400 hover:text-zinc-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-          title={sessionId ? "Attach files" : "Create a session first"}
+          className="flex items-center justify-center w-10 h-10 rounded-xl hover:bg-[#2d2d2d] text-[#8a8580] hover:text-[#d77757] transition-colors flex-shrink-0"
+          title="Attach files"
         >
-          📎
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+          </svg>
         </button>
         <input
           ref={fileInputRef}
@@ -161,22 +162,22 @@ export function ChatInput({
                 : "Message Claude Code..."
           }
           disabled={disabled || uploading}
-          className="flex-1 bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-rose-500/50 focus:ring-1 focus:ring-rose-500/20 placeholder-zinc-600 disabled:opacity-50 transition-all"
+          className="flex-1 bg-[#232323] border border-[#3a3a3a] rounded-xl px-4 py-2.5 text-sm text-[#e8e4df] focus:outline-none focus:border-[#d77757]/50 focus:ring-1 focus:ring-[#d77757]/20 placeholder-[#6a6560] disabled:opacity-50 transition-all"
         />
 
         {/* Send button */}
         <button
           type="submit"
           disabled={disabled || uploading || (!input.trim() && pendingFiles.length === 0)}
-          className="flex items-center justify-center w-9 h-9 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white transition-colors disabled:cursor-not-allowed flex-shrink-0"
+          className="flex items-center justify-center w-10 h-10 rounded-xl bg-[#d77757] hover:bg-[#c46847] disabled:bg-[#333333] disabled:text-[#6a6560] text-white transition-colors disabled:cursor-not-allowed flex-shrink-0"
         >
           ↑
         </button>
       </form>
 
       {dragOver && (
-        <div className="absolute inset-0 bg-rose-600/10 border-2 border-dashed border-rose-500/50 rounded-xl flex items-center justify-center pointer-events-none z-10">
-          <p className="text-rose-400 font-medium">Drop files here</p>
+        <div className="absolute inset-0 bg-[#d77757]/10 border-2 border-dashed border-[#d77757]/50 rounded-xl flex items-center justify-center pointer-events-none z-10">
+          <p className="text-[#d77757] font-medium">Drop files here</p>
         </div>
       )}
     </div>

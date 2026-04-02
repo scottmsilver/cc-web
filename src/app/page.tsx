@@ -560,7 +560,7 @@ export default function Chat() {
 
   return (
     <div
-      className="flex h-screen bg-zinc-950 text-zinc-100"
+      className="flex h-screen bg-[#1a1a1a] text-[#f0ece8]"
       onDragOver={(e) => {
         e.preventDefault();
         setUploadDrag(true);
@@ -569,8 +569,8 @@ export default function Chat() {
       onDrop={handleDrop}
     >
       {uploadDrag && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center border-4 border-dashed border-rose-500 bg-rose-600/20">
-          <p className="text-2xl font-semibold text-rose-400">Drop files to upload</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center border-4 border-dashed border-[#d77757] bg-[#d77757]/20">
+          <p className="text-2xl font-semibold text-[#d77757]">Drop files to upload</p>
         </div>
       )}
 
@@ -582,24 +582,24 @@ export default function Chat() {
         onChange={(e) => e.target.files && void uploadFiles(e.target.files)}
       />
 
-      <div className="flex w-64 flex-col border-r border-zinc-800">
-        <div className="border-b border-zinc-800 p-4">
-          <h1 className="text-lg font-semibold text-rose-500">cchost</h1>
-          <p className="text-xs text-zinc-500">Claude Code Chat</p>
+      <div className="flex w-64 flex-col border-r border-[#3a3a3a]">
+        <div className="border-b border-[#3a3a3a] p-4">
+          <h1 className="text-lg font-semibold text-[#d77757]">cchost</h1>
+          <p className="text-xs text-[#8a8580]">Claude Code Chat</p>
         </div>
-        <div className="border-b border-zinc-800 p-3">
+        <div className="border-b border-[#3a3a3a] p-3">
           <button
             type="button"
             onClick={startNewSessionDraft}
-            className="w-full rounded-lg border border-zinc-700 px-3 py-2 text-left text-sm text-zinc-300 transition-colors hover:border-rose-500 hover:text-rose-300"
+            className="w-full rounded-lg border border-[#444444] px-3 py-2 text-left text-sm text-[#d4d0cc] transition-colors hover:border-[#d77757] hover:text-[#e8946e]"
           >
             New session
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-3">
-          <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">Sessions</h2>
+          <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-[#8a8580]">Sessions</h2>
           {sessions.length === 0 ? (
-            <p className="text-xs text-zinc-600">No active sessions</p>
+            <p className="text-xs text-[#6a6560]">No active sessions</p>
           ) : (
             sessions.map((session) => (
               <button
@@ -609,7 +609,7 @@ export default function Chat() {
                   setActiveTab("files");
                 }}
                 className={`mb-1 w-full truncate rounded-lg px-3 py-2 text-left text-sm ${
-                  activeSession === session.id ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-900"
+                  activeSession === session.id ? "bg-[#2d2d2d] text-[#f0ece8]" : "text-[#a09a94] hover:bg-[#232323]"
                 }`}
               >
                 {session.id}
@@ -620,11 +620,11 @@ export default function Chat() {
       </div>
 
       <div className="flex flex-1 flex-col">
-        <div className="flex items-center border-b border-zinc-800">
+        <div className="flex items-center border-b border-[#3a3a3a]">
           <button
             onClick={() => setActiveTab("chat")}
             className={`px-6 py-3 text-sm font-medium ${
-              activeTab === "chat" ? "border-b-2 border-rose-500 text-rose-500" : "text-zinc-500 hover:text-zinc-300"
+              activeTab === "chat" ? "border-b-2 border-[#d77757] text-[#d77757]" : "text-[#8a8580] hover:text-[#d4d0cc]"
             }`}
           >
             Chat
@@ -632,16 +632,16 @@ export default function Chat() {
           <button
             onClick={() => setActiveTab("files")}
             className={`px-6 py-3 text-sm font-medium ${
-              activeTab === "files" ? "border-b-2 border-rose-500 text-rose-500" : "text-zinc-500 hover:text-zinc-300"
+              activeTab === "files" ? "border-b-2 border-[#d77757] text-[#d77757]" : "text-[#8a8580] hover:text-[#d4d0cc]"
             }`}
           >
             Files{files.length > 0 && ` (${files.length})`}
           </button>
           <div className="ml-auto flex items-center gap-3 pr-4">
-            <span className="text-xs text-zinc-500">{activeSession ? `Session: ${activeSession}` : "Draft session"}</span>
+            <span className="text-xs text-[#8a8580]">{activeSession ? `Session: ${activeSession}` : "Draft session"}</span>
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-500 transition-colors hover:border-rose-500 hover:text-rose-400"
+              className="rounded-lg border border-[#444444] px-3 py-1.5 text-xs text-[#8a8580] transition-colors hover:border-[#d77757] hover:text-[#d77757]"
             >
               Upload File
             </button>
@@ -654,8 +654,8 @@ export default function Chat() {
               {messages.length === 0 && !showProgressPanel && (
                 <div className="flex h-full items-center justify-center">
                   <div className="text-center">
-                    <p className="mb-2 text-2xl font-light text-zinc-400">Claude Code</p>
-                    <p className="mb-4 text-sm text-zinc-600">Send a message or drop a file to start</p>
+                    <p className="mb-2 text-2xl font-light text-[#a09a94]">Claude Code</p>
+                    <p className="mb-4 text-sm text-[#6a6560]">Send a message or drop a file to start</p>
                   </div>
                 </div>
               )}
@@ -664,7 +664,7 @@ export default function Chat() {
                 <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
                   <div
                     className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm ${
-                      message.role === "user" ? "bg-rose-600/20 text-zinc-100" : "bg-zinc-800 text-zinc-200"
+                      message.role === "user" ? "bg-[#d77757]/20 text-[#f0ece8]" : "bg-[#2d2d2d] text-[#e8e4df]"
                     }`}
                   >
                     {message.role === "assistant" ? (
@@ -681,7 +681,7 @@ export default function Chat() {
                                     href={`${CCHOST_API}/api/sessions/${activeSession}/files/${encodeURIComponent(text)}`}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-rose-400 hover:text-rose-300 text-xs font-mono no-underline border border-zinc-700 hover:border-rose-500/50"
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#2d2d2d] hover:bg-[#333333] text-[#d77757] hover:text-[#e8946e] text-xs font-mono no-underline border border-[#444444] hover:border-[#d77757]/50"
                                   >
                                     {text} <span className="opacity-40 text-[10px]">↓</span>
                                   </a>
@@ -707,7 +707,7 @@ export default function Chat() {
 
               {isLoading && !showProgressPanel && (
                 <div className="flex justify-start">
-                  <div className="animate-pulse rounded-2xl bg-zinc-800 px-4 py-3 text-sm text-zinc-400">Claude is working...</div>
+                  <div className="animate-pulse rounded-2xl bg-[#2d2d2d] px-4 py-3 text-sm text-[#a09a94]">Claude is working...</div>
                 </div>
               )}
 
@@ -724,18 +724,18 @@ export default function Chat() {
 
         {activeTab === "files" && (
           <div className="flex flex-1">
-            <div className="w-72 overflow-y-auto border-r border-zinc-800 p-3">
-              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">Files</h3>
+            <div className="w-72 overflow-y-auto border-r border-[#3a3a3a] p-3">
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-[#8a8580]">Files</h3>
               {!activeSession ? (
-                <p className="text-xs text-zinc-600">Send a message to create a session</p>
+                <p className="text-xs text-[#6a6560]">Send a message to create a session</p>
               ) : files.length === 0 ? (
-                <p className="text-xs text-zinc-600">No files yet. Upload or ask Claude to create some.</p>
+                <p className="text-xs text-[#6a6560]">No files yet. Upload or ask Claude to create some.</p>
               ) : (
                 files.map((file) => (
                   <div
                     key={file}
                     className={`flex cursor-pointer items-center gap-1 truncate rounded px-2 py-1.5 text-xs font-mono ${
-                      selectedFile === file ? "bg-zinc-800 text-rose-400" : "text-zinc-400 hover:bg-zinc-900"
+                      selectedFile === file ? "bg-[#2d2d2d] text-[#d77757]" : "text-[#a09a94] hover:bg-[#232323]"
                     }`}
                   >
                     <button
@@ -747,7 +747,7 @@ export default function Chat() {
                     <button
                       onClick={() => downloadFile(file)}
                       title="Download"
-                      className="flex-shrink-0 text-zinc-600 hover:text-rose-400"
+                      className="flex-shrink-0 text-[#6a6560] hover:text-[#d77757]"
                     >
                       ↓
                     </button>
@@ -759,18 +759,18 @@ export default function Chat() {
               {selectedFile ? (
                 <>
                   <div className="mb-3 flex items-center gap-3">
-                    <h3 className="text-sm font-medium text-zinc-400">{selectedFile}</h3>
+                    <h3 className="text-sm font-medium text-[#a09a94]">{selectedFile}</h3>
                     <button
                       onClick={() => downloadFile(selectedFile)}
-                      className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-500 hover:border-rose-500 hover:text-rose-400"
+                      className="rounded border border-[#444444] px-2 py-1 text-xs text-[#8a8580] hover:border-[#d77757] hover:text-[#d77757]"
                     >
                       Download
                     </button>
                   </div>
-                  <pre className="whitespace-pre-wrap rounded-lg bg-zinc-900 p-4 text-xs font-mono text-zinc-300">{fileContent}</pre>
+                  <pre className="whitespace-pre-wrap rounded-lg bg-[#232323] p-4 text-xs font-mono text-[#d4d0cc]">{fileContent}</pre>
                 </>
               ) : (
-                <p className="text-sm text-zinc-600">Click a file to view. Binary files (PDF, XLSX) will download directly.</p>
+                <p className="text-sm text-[#6a6560]">Click a file to view. Binary files (PDF, XLSX) will download directly.</p>
               )}
             </div>
           </div>
