@@ -1,62 +1,379 @@
 "use client";
 
-import { useState, useEffect, useRef, FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
 
-const CCHOST_API = "http://localhost:8420";
+import { ProgressPanel } from "@/components/progress-panel";
+import type { ProgressResponse, RunResponse } from "@/lib/progress";
 
-interface Message {
+const CCHOST_API = "http://localhost:8420";
+const DEFAULT_RUN_TIMEOUT_SECONDS = 900;
+const POLL_INTERVAL_MS = 1200;
+const POLL_FAILURE_LIMIT = 3;
+const WORKING_DIR_ROOT = "/tmp/cchost-ui";
+
+type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
+};
+
+type SessionRecord = {
+  id: string;
+  working_dir?: string | null;
+};
+
+type ConversationEntry = {
+  role?: unknown;
+  text?: unknown;
+};
+
+function makeMessageId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function generateSessionId(): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `session-${stamp}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getSessionWorkingDir(sessionId: string): string {
+  return `${WORKING_DIR_ROOT}/${sessionId}`;
+}
+
+function normalizeSessionRecord(value: unknown): SessionRecord | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const id =
+    typeof (value as { id?: unknown }).id === "string"
+      ? (value as { id: string }).id
+      : typeof (value as { session_id?: unknown }).session_id === "string"
+        ? (value as { session_id: string }).session_id
+        : null;
+
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    working_dir:
+      typeof (value as { working_dir?: unknown }).working_dir === "string"
+        ? (value as { working_dir: string }).working_dir
+        : null,
+  };
+}
+
+function normalizeConversationEntry(entry: ConversationEntry, index: number): Message | null {
+  const role = entry.role === "user" || entry.role === "assistant" ? entry.role : null;
+  const content = typeof entry.text === "string" ? entry.text : "";
+
+  if (!role || !content) {
+    return null;
+  }
+
+  return {
+    id: `${role}-${index}`,
+    role,
+    content,
+  };
+}
+
+function createEmptyProgress(run: RunResponse): ProgressResponse {
+  return {
+    run,
+    snapshot: {
+      events: [],
+      background_count: 0,
+      primary_label: null,
+      primary_confidence: 0,
+      primary_label_source: "inferred",
+      milestones: [],
+      is_question: false,
+      is_prompt: false,
+    },
+  };
+}
+
+function getRunText(run: RunResponse | null | undefined): string {
+  return run?.result?.text?.trim() ?? "";
 }
 
 export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [sessions, setSessions] = useState<any[]>([]);
+  const [isAnswering, setIsAnswering] = useState(false);
+  const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [files, setFiles] = useState<string[]>([]);
   const [activeSession, setActiveSession] = useState<string | null>(null);
-  const [fileContent, setFileContent] = useState<string>("");
-  const [selectedFile, setSelectedFile] = useState<string>("");
+  const [fileContent, setFileContent] = useState("");
+  const [selectedFile, setSelectedFile] = useState("");
   const [activeTab, setActiveTab] = useState<"chat" | "files">("chat");
   const [uploadDrag, setUploadDrag] = useState(false);
+  const [progress, setProgress] = useState<ProgressResponse | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const handledRunIdsRef = useRef<Set<string>>(new Set());
+  const pollFailureCountRef = useRef(0);
+  const skipConversationLoadForSessionRef = useRef<string | null>(null);
+
+  const fetchSessions = useCallback(async () => {
+    try {
+      const response = await fetch(`${CCHOST_API}/api/sessions`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const payload = (await response.json()) as unknown[];
+      const nextSessions = payload
+        .map(normalizeSessionRecord)
+        .filter((session): session is SessionRecord => Boolean(session));
+
+      setSessions(nextSessions);
+    } catch {}
+  }, []);
+
+  const fetchFiles = useCallback(async (sessionId: string) => {
+    try {
+      const response = await fetch(`${CCHOST_API}/api/sessions/${sessionId}/files`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const payload = (await response.json()) as { files?: string[] };
+      setFiles(payload.files || []);
+    } catch {}
+  }, []);
+
+  const fetchConversation = useCallback(async (sessionId: string) => {
+    try {
+      const response = await fetch(`${CCHOST_API}/api/sessions/${sessionId}/conversation`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const payload = (await response.json()) as { conversation?: ConversationEntry[] };
+      const nextMessages = (payload.conversation ?? [])
+        .map(normalizeConversationEntry)
+        .filter((message): message is Message => Boolean(message));
+
+      setMessages(nextMessages);
+    } catch {
+      setMessages([]);
+    }
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, progress]);
 
-  // Fetch sessions
   useEffect(() => {
-    const f = async () => {
-      try { const r = await fetch(`${CCHOST_API}/api/sessions`); setSessions(await r.json()); } catch {}
-    };
-    f(); const i = setInterval(f, 10000); return () => clearInterval(i);
-  }, []);
+    void fetchSessions();
+    const intervalId = window.setInterval(() => {
+      void fetchSessions();
+    }, 10000);
+    return () => window.clearInterval(intervalId);
+  }, [fetchSessions]);
 
-  // Fetch files
   useEffect(() => {
-    if (!activeSession) return;
-    const f = async () => {
-      try { const r = await fetch(`${CCHOST_API}/api/sessions/${activeSession}/files`); setFiles((await r.json()).files || []); } catch {}
+    if (!activeSession) {
+      setFiles([]);
+      setMessages([]);
+      setSelectedFile("");
+      setFileContent("");
+      setProgress(null);
+      setActiveRunId(null);
+      setIsAnswering(false);
+      return;
+    }
+
+    setSelectedFile("");
+    setFileContent("");
+    setIsAnswering(false);
+
+    if (skipConversationLoadForSessionRef.current === activeSession) {
+      skipConversationLoadForSessionRef.current = null;
+    } else {
+      void fetchConversation(activeSession);
+    }
+
+    void fetchFiles(activeSession);
+    const intervalId = window.setInterval(() => {
+      void fetchFiles(activeSession);
+    }, 5000);
+
+    return () => window.clearInterval(intervalId);
+  }, [activeSession, fetchConversation, fetchFiles]);
+
+  useEffect(() => {
+    if (!activeSession) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadProgress = async () => {
+      try {
+        const response = await fetch(`${CCHOST_API}/api/sessions/${activeSession}/progress`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const nextProgress = (await response.json()) as ProgressResponse;
+        if (cancelled) {
+          return;
+        }
+
+        setProgress(nextProgress);
+        pollFailureCountRef.current = 0;
+
+        if (nextProgress.run && ["pending", "running", "waiting_for_input"].includes(nextProgress.run.status)) {
+          setActiveRunId(nextProgress.run.run_id);
+          setIsLoading(true);
+          setIsAnswering(false);
+        } else {
+          setActiveRunId(null);
+          setIsLoading(false);
+          setIsAnswering(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setProgress(null);
+          setActiveRunId(null);
+          setIsLoading(false);
+          setIsAnswering(false);
+        }
+      }
     };
-    f(); const i = setInterval(f, 5000); return () => clearInterval(i);
+
+    void loadProgress();
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeSession]);
 
+  useEffect(() => {
+    if (!activeSession || !activeRunId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const appendAssistantMessage = (run: RunResponse, fallbackText: string) => {
+      if (handledRunIdsRef.current.has(run.run_id)) {
+        return;
+      }
+
+      handledRunIdsRef.current.add(run.run_id);
+      const content = fallbackText || getRunText(run) || "Run completed with no assistant output.";
+      setMessages((prev) => [...prev, { id: makeMessageId("assistant"), role: "assistant", content }]);
+    };
+
+    const poll = async () => {
+      try {
+        const [progressResponse, runResponse] = await Promise.all([
+          fetch(`${CCHOST_API}/api/sessions/${activeSession}/progress`),
+          fetch(`${CCHOST_API}/api/sessions/${activeSession}/runs/${activeRunId}`),
+        ]);
+
+        if (!progressResponse.ok) {
+          throw new Error(`Failed to fetch progress: HTTP ${progressResponse.status}`);
+        }
+        if (!runResponse.ok) {
+          throw new Error(`Failed to fetch run: HTTP ${runResponse.status}`);
+        }
+
+        const nextProgress = (await progressResponse.json()) as ProgressResponse;
+        const run = (await runResponse.json()) as RunResponse;
+
+        if (cancelled) {
+          return;
+        }
+
+        pollFailureCountRef.current = 0;
+        setProgress({
+          ...nextProgress,
+          run,
+        });
+
+        if (run.status !== "waiting_for_input") {
+          setIsAnswering(false);
+        }
+
+        if (run.status === "completed") {
+          appendAssistantMessage(run, "");
+          setIsLoading(false);
+          setIsAnswering(false);
+          setActiveRunId(null);
+          void fetchSessions();
+          void fetchFiles(activeSession);
+          return;
+        }
+
+        if (run.status === "error") {
+          appendAssistantMessage(run, `Error: ${run.error || "Run failed."}`);
+          setIsLoading(false);
+          setIsAnswering(false);
+          setActiveRunId(null);
+        }
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        pollFailureCountRef.current += 1;
+        if (pollFailureCountRef.current < POLL_FAILURE_LIMIT) {
+          return;
+        }
+
+        const message = error instanceof Error ? error.message : "Failed to poll progress.";
+        setMessages((prev) => [
+          ...prev,
+          { id: makeMessageId("assistant"), role: "assistant", content: `Error: ${message}` },
+        ]);
+        setIsLoading(false);
+        setIsAnswering(false);
+        setActiveRunId(null);
+      }
+    };
+
+    void poll();
+    const intervalId = window.setInterval(() => {
+      void poll();
+    }, POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeRunId, activeSession, fetchFiles, fetchSessions]);
+
   const readFile = async (path: string) => {
-    if (!activeSession) return;
+    if (!activeSession) {
+      return;
+    }
+
     try {
-      const r = await fetch(`${CCHOST_API}/api/sessions/${activeSession}/files/${encodeURIComponent(path)}`);
-      setFileContent((await r.text()).substring(0, 50000));
+      const response = await fetch(
+        `${CCHOST_API}/api/sessions/${activeSession}/files/${encodeURIComponent(path)}`,
+      );
+      setFileContent((await response.text()).substring(0, 50000));
       setSelectedFile(path);
-    } catch (e: any) { setFileContent(`Error: ${e.message}`); }
+    } catch (error: unknown) {
+      setFileContent(`Error: ${error instanceof Error ? error.message : "Failed to read file."}`);
+    }
   };
 
   const downloadFile = (path: string) => {
-    if (!activeSession) return;
+    if (!activeSession) {
+      return;
+    }
+
     window.open(`${CCHOST_API}/api/sessions/${activeSession}/files/${encodeURIComponent(path)}`, "_blank");
   };
 
@@ -65,208 +382,334 @@ export default function Chat() {
       alert("Send a message first to create a session, then upload files.");
       return;
     }
+
     const formData = new FormData();
-    Array.from(fileList).forEach(f => formData.append(f.name, f));
+    Array.from(fileList).forEach((file) => formData.append(file.name, file));
+
     try {
-      const r = await fetch(`${CCHOST_API}/api/sessions/${activeSession}/upload`, { method: "POST", body: formData });
-      const data = await r.json();
-      if (data.uploaded?.length) {
-        // Add a system message about the upload
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          role: "assistant",
-          content: `Uploaded ${data.uploaded.length} file(s): ${data.uploaded.join(", ")}`,
-        }]);
-        fetchFiles();
+      const response = await fetch(`${CCHOST_API}/api/sessions/${activeSession}/upload`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = (await response.json()) as { uploaded?: string[] };
+      const uploaded = data.uploaded ?? [];
+      if (uploaded.length) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: makeMessageId("assistant"),
+            role: "assistant",
+            content: `Uploaded ${uploaded.length} file(s): ${uploaded.join(", ")}`,
+          },
+        ]);
+        void fetchFiles(activeSession);
       }
-    } catch (e: any) { alert(`Upload failed: ${e.message}`); }
+    } catch (error: unknown) {
+      alert(`Upload failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
   };
 
-  const fetchFiles = async () => {
-    if (!activeSession) return;
-    try { const r = await fetch(`${CCHOST_API}/api/sessions/${activeSession}/files`); setFiles((await r.json()).files || []); } catch {}
+  const ensureSession = async (): Promise<string> => {
+    if (activeSession) {
+      return activeSession;
+    }
+
+    const sessionId = generateSessionId();
+    const response = await fetch(`${CCHOST_API}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
+        working_dir: getSessionWorkingDir(sessionId),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to create session: HTTP ${response.status}`);
+    }
+
+    const payload =
+      normalizeSessionRecord(await response.json()) ?? { id: sessionId, working_dir: getSessionWorkingDir(sessionId) };
+    skipConversationLoadForSessionRef.current = payload.id;
+    setActiveSession(payload.id);
+    setSessions((prev) => {
+      if (prev.some((session) => session.id === payload.id)) {
+        return prev;
+      }
+      return [payload, ...prev];
+    });
+    return payload.id;
+  };
+
+  const startRun = async (sessionId: string, message: string) => {
+    const response = await fetch(`${CCHOST_API}/api/sessions/${sessionId}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, timeout: DEFAULT_RUN_TIMEOUT_SECONDS }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to start run: HTTP ${response.status}`);
+    }
+
+    const run = (await response.json()) as RunResponse;
+    handledRunIdsRef.current.delete(run.run_id);
+    pollFailureCountRef.current = 0;
+    setProgress(createEmptyProgress(run));
+    setActiveRunId(run.run_id);
+    setIsAnswering(false);
+    setIsLoading(true);
   };
 
   const sendMessage = async (e: FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    const message = input.trim();
+    if (!message || isLoading) {
+      return;
+    }
 
-    const userMsg: Message = { id: Date.now().toString(), role: "user", content: input };
-    const allMessages = [...messages, userMsg];
-    setMessages(allMessages);
+    setMessages((prev) => [...prev, { id: makeMessageId("user"), role: "user", content: message }]);
     setInput("");
     setIsLoading(true);
 
     try {
-      // If we have an active session, use the REST API directly (keeps files in the right place)
-      // Otherwise use the OpenAI endpoint (creates a new session)
-      let responseText = "";
-
-      if (activeSession) {
-        // Direct REST API — messages go to the existing session
-        const res = await fetch(`${CCHOST_API}/api/sessions/${activeSession}/send`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: input, timeout: 900 }),
-        });
-        const data = await res.json();
-        responseText = data.text || data.error || "No response";
-      } else {
-        // OpenAI endpoint — creates a new session
-        const res = await fetch(`${CCHOST_API}/v1/chat/completions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "claude-code",
-            messages: allMessages.map(m => ({ role: m.role, content: m.content })),
-            stream: true,
-          }),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-        const reader = res.body?.getReader();
-        const decoder = new TextDecoder();
-        while (reader) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          for (const line of decoder.decode(value).split("\n")) {
-            if (line.startsWith("data: ") && line !== "data: [DONE]") {
-              try {
-                const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content;
-                if (delta) responseText += delta;
-              } catch {}
-            }
-          }
-        }
-      }
-
-      const assistantId = (Date.now() + 1).toString();
-      setMessages(prev => [...prev, { id: assistantId, role: "assistant", content: responseText }]);
-
-      // After response, refresh sessions and files
-      setTimeout(() => { fetchSessions(); fetchFiles(); }, 2000);
-    } catch (e: any) {
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: "assistant", content: `Error: ${e.message}` }]);
+      const sessionId = await ensureSession();
+      await startRun(sessionId, message);
+      setActiveTab("chat");
+    } catch (error: unknown) {
+      const content = error instanceof Error ? `Error: ${error.message}` : "Error: Failed to start run.";
+      setMessages((prev) => [...prev, { id: makeMessageId("assistant"), role: "assistant", content }]);
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
-  const fetchSessions = async () => {
-    try { const r = await fetch(`${CCHOST_API}/api/sessions`); const data = await r.json(); setSessions(data); if (data.length && !activeSession) setActiveSession(data[0].id); } catch {}
+  const answerQuestion = async (optionIndex: number) => {
+    if (!activeSession || !progress?.run || isAnswering) {
+      return;
+    }
+
+    setIsAnswering(true);
+    setIsLoading(true);
+
+    try {
+      const response = await fetch(`${CCHOST_API}/api/sessions/${activeSession}/answer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ option_index: optionIndex }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to answer question: HTTP ${response.status}`);
+      }
+
+      setProgress((prev) =>
+        prev
+          ? {
+              ...prev,
+              run: prev.run
+                ? {
+                    ...prev.run,
+                    status: "running",
+                    waiting_for_input: false,
+                    current_question: null,
+                  }
+                : prev.run,
+              snapshot: {
+                ...prev.snapshot,
+                is_question: false,
+              },
+            }
+          : prev,
+      );
+      pollFailureCountRef.current = 0;
+      setActiveRunId(progress.run.run_id);
+    } catch (error: unknown) {
+      const content =
+        error instanceof Error ? `Error: ${error.message}` : "Error: Failed to answer question.";
+      setMessages((prev) => [...prev, { id: makeMessageId("assistant"), role: "assistant", content }]);
+      setIsLoading(false);
+      setIsAnswering(false);
+    }
+  };
+
+  const startNewSessionDraft = () => {
+    skipConversationLoadForSessionRef.current = null;
+    pollFailureCountRef.current = 0;
+    setActiveSession(null);
+    setMessages([]);
+    setFiles([]);
+    setSelectedFile("");
+    setFileContent("");
+    setProgress(null);
+    setActiveRunId(null);
+    setActiveTab("chat");
+    setIsLoading(false);
+    setIsAnswering(false);
   };
 
   const isBinary = (path: string) => /\.(pdf|xlsx|xls|zip|png|jpg|gif)$/i.test(path);
+  const showProgressPanel = progress !== null;
 
-  // Drag and drop handlers
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setUploadDrag(false);
-    if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+    if (e.dataTransfer.files.length) {
+      void uploadFiles(e.dataTransfer.files);
+    }
   };
 
   return (
-    <div className="flex h-screen bg-zinc-950 text-zinc-100"
-      onDragOver={e => { e.preventDefault(); setUploadDrag(true); }}
+    <div
+      className="flex h-screen bg-zinc-950 text-zinc-100"
+      onDragOver={(e) => {
+        e.preventDefault();
+        setUploadDrag(true);
+      }}
       onDragLeave={() => setUploadDrag(false)}
       onDrop={handleDrop}
     >
-      {/* Upload overlay */}
       {uploadDrag && (
-        <div className="fixed inset-0 bg-rose-600/20 border-4 border-dashed border-rose-500 z-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-50 flex items-center justify-center border-4 border-dashed border-rose-500 bg-rose-600/20">
           <p className="text-2xl font-semibold text-rose-400">Drop files to upload</p>
         </div>
       )}
 
-      {/* Hidden file input */}
-      <input ref={fileInputRef} type="file" multiple className="hidden"
-        onChange={e => e.target.files && uploadFiles(e.target.files)} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => e.target.files && void uploadFiles(e.target.files)}
+      />
 
-      {/* Sidebar */}
-      <div className="w-64 border-r border-zinc-800 flex flex-col">
-        <div className="p-4 border-b border-zinc-800">
+      <div className="flex w-64 flex-col border-r border-zinc-800">
+        <div className="border-b border-zinc-800 p-4">
           <h1 className="text-lg font-semibold text-rose-500">cchost</h1>
           <p className="text-xs text-zinc-500">Claude Code Chat</p>
         </div>
-        <div className="p-3 flex-1 overflow-y-auto">
-          <h2 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Sessions</h2>
+        <div className="border-b border-zinc-800 p-3">
+          <button
+            type="button"
+            onClick={startNewSessionDraft}
+            className="w-full rounded-lg border border-zinc-700 px-3 py-2 text-left text-sm text-zinc-300 transition-colors hover:border-rose-500 hover:text-rose-300"
+          >
+            New session
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-3">
+          <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">Sessions</h2>
           {sessions.length === 0 ? (
             <p className="text-xs text-zinc-600">No active sessions</p>
-          ) : sessions.map((s: any) => (
-            <button key={s.id} onClick={() => { setActiveSession(s.id); setActiveTab("files"); }}
-              className={`w-full text-left px-3 py-2 rounded-lg text-sm mb-1 truncate ${
-                activeSession === s.id ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-900"
-              }`}>
-              {s.id}
-            </button>
-          ))}
+          ) : (
+            sessions.map((session) => (
+              <button
+                key={session.id}
+                onClick={() => {
+                  setActiveSession(session.id);
+                  setActiveTab("files");
+                }}
+                className={`mb-1 w-full truncate rounded-lg px-3 py-2 text-left text-sm ${
+                  activeSession === session.id ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-900"
+                }`}
+              >
+                {session.id}
+              </button>
+            ))
+          )}
         </div>
       </div>
 
-      {/* Main */}
-      <div className="flex-1 flex flex-col">
-        <div className="flex border-b border-zinc-800 items-center">
-          <button onClick={() => setActiveTab("chat")}
-            className={`px-6 py-3 text-sm font-medium ${activeTab === "chat" ? "text-rose-500 border-b-2 border-rose-500" : "text-zinc-500 hover:text-zinc-300"}`}>
+      <div className="flex flex-1 flex-col">
+        <div className="flex items-center border-b border-zinc-800">
+          <button
+            onClick={() => setActiveTab("chat")}
+            className={`px-6 py-3 text-sm font-medium ${
+              activeTab === "chat" ? "border-b-2 border-rose-500 text-rose-500" : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
             Chat
           </button>
-          <button onClick={() => setActiveTab("files")}
-            className={`px-6 py-3 text-sm font-medium ${activeTab === "files" ? "text-rose-500 border-b-2 border-rose-500" : "text-zinc-500 hover:text-zinc-300"}`}>
+          <button
+            onClick={() => setActiveTab("files")}
+            className={`px-6 py-3 text-sm font-medium ${
+              activeTab === "files" ? "border-b-2 border-rose-500 text-rose-500" : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
             Files{files.length > 0 && ` (${files.length})`}
           </button>
-          <div className="ml-auto pr-4">
-            <button onClick={() => fileInputRef.current?.click()}
-              className="text-xs text-zinc-500 hover:text-rose-400 px-3 py-1.5 border border-zinc-700 rounded-lg hover:border-rose-500 transition-colors">
+          <div className="ml-auto flex items-center gap-3 pr-4">
+            <span className="text-xs text-zinc-500">{activeSession ? `Session: ${activeSession}` : "Draft session"}</span>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-500 transition-colors hover:border-rose-500 hover:text-rose-400"
+            >
               Upload File
             </button>
           </div>
         </div>
 
         {activeTab === "chat" && (
-          <div className="flex-1 flex flex-col">
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {messages.length === 0 && (
-                <div className="flex items-center justify-center h-full">
+          <div className="flex flex-1 flex-col">
+            <div className="flex-1 space-y-4 overflow-y-auto p-4">
+              {messages.length === 0 && !showProgressPanel && (
+                <div className="flex h-full items-center justify-center">
                   <div className="text-center">
-                    <p className="text-2xl font-light text-zinc-400 mb-2">Claude Code</p>
-                    <p className="text-sm text-zinc-600 mb-4">Send a message or drop a file to start</p>
+                    <p className="mb-2 text-2xl font-light text-zinc-400">Claude Code</p>
+                    <p className="mb-4 text-sm text-zinc-600">Send a message or drop a file to start</p>
                   </div>
                 </div>
               )}
-              {messages.map(m => (
-                <div key={m.id} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                  <div className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm ${
-                    m.role === "user" ? "bg-rose-600/20 text-zinc-100" : "bg-zinc-800 text-zinc-200"
-                  }`}>
-                    {m.role === "assistant" ? (
-                      <div className="prose prose-invert prose-sm max-w-none
-                        prose-pre:bg-zinc-900 prose-pre:text-zinc-300
-                        prose-code:text-rose-400 prose-code:bg-zinc-900 prose-code:px-1 prose-code:rounded
-                        prose-table:text-zinc-300 prose-th:text-zinc-200
-                        prose-a:text-rose-400 prose-strong:text-zinc-100">
-                        <ReactMarkdown>{m.content}</ReactMarkdown>
+
+              {messages.map((message) => (
+                <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div
+                    className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm ${
+                      message.role === "user" ? "bg-rose-600/20 text-zinc-100" : "bg-zinc-800 text-zinc-200"
+                    }`}
+                  >
+                    {message.role === "assistant" ? (
+                      <div
+                        className="prose prose-invert prose-sm max-w-none
+                          prose-pre:bg-zinc-900 prose-pre:text-zinc-300
+                          prose-code:rounded prose-code:bg-zinc-900 prose-code:px-1 prose-code:text-rose-400
+                          prose-table:text-zinc-300 prose-th:text-zinc-200
+                          prose-a:text-rose-400 prose-strong:text-zinc-100"
+                      >
+                        <ReactMarkdown>{message.content}</ReactMarkdown>
                       </div>
                     ) : (
-                      <pre className="whitespace-pre-wrap font-sans">{m.content}</pre>
+                      <pre className="whitespace-pre-wrap font-sans">{message.content}</pre>
                     )}
                   </div>
                 </div>
               ))}
-              {isLoading && messages[messages.length - 1]?.content === "" && (
+
+              {showProgressPanel && progress ? (
+                <ProgressPanel progress={progress} onAnswer={isAnswering ? undefined : answerQuestion} />
+              ) : null}
+
+              {isLoading && !showProgressPanel && (
                 <div className="flex justify-start">
-                  <div className="bg-zinc-800 rounded-2xl px-4 py-3 text-sm text-zinc-400 animate-pulse">
-                    Claude is working...
-                  </div>
+                  <div className="animate-pulse rounded-2xl bg-zinc-800 px-4 py-3 text-sm text-zinc-400">Claude is working...</div>
                 </div>
               )}
+
               <div ref={messagesEndRef} />
             </div>
-            <form onSubmit={sendMessage} className="p-4 border-t border-zinc-800">
+            <form onSubmit={sendMessage} className="border-t border-zinc-800 p-4">
               <div className="flex gap-2">
-                <input value={input} onChange={e => setInput(e.target.value)}
-                  placeholder="Message Claude Code..." disabled={isLoading}
-                  className="flex-1 bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-rose-500 placeholder-zinc-600" />
-                <button type="submit" disabled={isLoading || !input.trim()}
-                  className="bg-rose-600 hover:bg-rose-500 disabled:bg-zinc-700 disabled:cursor-not-allowed rounded-xl px-6 py-3 text-sm font-medium transition-colors">
+                <input
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder="Message Claude Code..."
+                  disabled={isLoading}
+                  className="flex-1 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-sm placeholder-zinc-600 focus:border-rose-500 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={isLoading || !input.trim()}
+                  className="rounded-xl bg-rose-600 px-6 py-3 text-sm font-medium transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-zinc-700"
+                >
                   Send
                 </button>
               </div>
@@ -275,38 +718,51 @@ export default function Chat() {
         )}
 
         {activeTab === "files" && (
-          <div className="flex-1 flex">
-            <div className="w-72 border-r border-zinc-800 overflow-y-auto p-3">
-              <h3 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Files</h3>
+          <div className="flex flex-1">
+            <div className="w-72 overflow-y-auto border-r border-zinc-800 p-3">
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">Files</h3>
               {!activeSession ? (
                 <p className="text-xs text-zinc-600">Send a message to create a session</p>
               ) : files.length === 0 ? (
                 <p className="text-xs text-zinc-600">No files yet. Upload or ask Claude to create some.</p>
-              ) : files.map(f => (
-                <div key={f} className={`flex items-center gap-1 px-2 py-1.5 rounded text-xs font-mono truncate cursor-pointer ${
-                  selectedFile === f ? "bg-zinc-800 text-rose-400" : "text-zinc-400 hover:bg-zinc-900"
-                }`}>
-                  <button onClick={() => isBinary(f) ? downloadFile(f) : readFile(f)} className="flex-1 text-left truncate">
-                    {f}
-                  </button>
-                  <button onClick={() => downloadFile(f)} title="Download"
-                    className="text-zinc-600 hover:text-rose-400 flex-shrink-0">
-                    ↓
-                  </button>
-                </div>
-              ))}
+              ) : (
+                files.map((file) => (
+                  <div
+                    key={file}
+                    className={`flex cursor-pointer items-center gap-1 truncate rounded px-2 py-1.5 text-xs font-mono ${
+                      selectedFile === file ? "bg-zinc-800 text-rose-400" : "text-zinc-400 hover:bg-zinc-900"
+                    }`}
+                  >
+                    <button
+                      onClick={() => (isBinary(file) ? downloadFile(file) : void readFile(file))}
+                      className="flex-1 truncate text-left"
+                    >
+                      {file}
+                    </button>
+                    <button
+                      onClick={() => downloadFile(file)}
+                      title="Download"
+                      className="flex-shrink-0 text-zinc-600 hover:text-rose-400"
+                    >
+                      ↓
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
             <div className="flex-1 overflow-auto p-4">
               {selectedFile ? (
                 <>
-                  <div className="flex items-center gap-3 mb-3">
+                  <div className="mb-3 flex items-center gap-3">
                     <h3 className="text-sm font-medium text-zinc-400">{selectedFile}</h3>
-                    <button onClick={() => downloadFile(selectedFile)}
-                      className="text-xs text-zinc-500 hover:text-rose-400 px-2 py-1 border border-zinc-700 rounded hover:border-rose-500">
+                    <button
+                      onClick={() => downloadFile(selectedFile)}
+                      className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-500 hover:border-rose-500 hover:text-rose-400"
+                    >
                       Download
                     </button>
                   </div>
-                  <pre className="text-xs font-mono text-zinc-300 bg-zinc-900 rounded-lg p-4 whitespace-pre-wrap">{fileContent}</pre>
+                  <pre className="whitespace-pre-wrap rounded-lg bg-zinc-900 p-4 text-xs font-mono text-zinc-300">{fileContent}</pre>
                 </>
               ) : (
                 <p className="text-sm text-zinc-600">Click a file to view. Binary files (PDF, XLSX) will download directly.</p>
