@@ -21,6 +21,8 @@ import os
 import threading
 import time as _time
 import uuid
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 import uvicorn
@@ -29,7 +31,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.responses import Response as HTTPResponse
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # ============================================================
 # Global host instance
@@ -76,11 +78,316 @@ class SessionInfo(BaseModel):
     created_at: str
 
 
+class QuestionOptionResponse(BaseModel):
+    label: str
+    index: int
+
+
+class QuestionResponse(BaseModel):
+    question: str
+    options: list[QuestionOptionResponse] = Field(default_factory=list)
+
+
 class SendResponse(BaseModel):
     text: str
     is_question: bool = False
-    questions: list = []
+    questions: list[QuestionResponse] = Field(default_factory=list)
     role: str = "assistant"
+
+
+class RunResponse(BaseModel):
+    run_id: str
+    session_id: str
+    status: str
+    started_at: str
+    finished_at: Optional[str] = None
+    result: Optional[SendResponse] = None
+    error: Optional[str] = None
+    waiting_for_input: bool = False
+    current_question: Optional[QuestionResponse] = None
+
+
+@dataclass
+class RunState:
+    run_id: str
+    session_id: str
+    status: str
+    started_at: str
+    finished_at: Optional[str] = None
+    result: Optional[dict] = None
+    error: Optional[str] = None
+    waiting_for_input: bool = False
+    current_question: Optional[dict] = None
+
+
+_runs: dict[str, RunState] = {}
+_session_runs: dict[str, str] = {}
+_progress_history: dict[str, dict] = {}
+_session_slots: set[str] = set()
+_runs_lock = threading.Lock()
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _serialize_question(question: dict) -> dict:
+    return {
+        "question": question.get("question", ""),
+        "options": [
+            {"label": option.label, "index": option.index}
+            for option in question.get("options", [])
+        ],
+    }
+
+
+
+def _serialize_send_response(response) -> dict:
+    return {
+        "text": response.text,
+        "is_question": response.is_question,
+        "questions": [_serialize_question(question) for question in response.questions],
+        "role": response.role,
+    }
+
+
+
+def _serialize_run(run: RunState) -> dict:
+    return {
+        "run_id": run.run_id,
+        "session_id": run.session_id,
+        "status": run.status,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "result": run.result,
+        "error": run.error,
+        "waiting_for_input": run.waiting_for_input,
+        "current_question": run.current_question,
+    }
+
+
+
+def _merge_progress_snapshot(session_id: str, run_id: Optional[str], snapshot_data: dict) -> dict:
+    with _runs_lock:
+        history = _progress_history.get(session_id)
+        if history is None or history.get("run_id") != run_id:
+            merged_events = list(snapshot_data.get("events", []))
+            merged_milestones = list(snapshot_data.get("milestones", []))
+        else:
+            merged_events = list(history.get("events", []))
+            for event in snapshot_data.get("events", []):
+                if event not in merged_events:
+                    merged_events.append(event)
+
+            merged_milestones = list(history.get("milestones", []))
+            for milestone in snapshot_data.get("milestones", []):
+                if milestone not in merged_milestones:
+                    merged_milestones.append(milestone)
+
+        merged_snapshot = dict(snapshot_data)
+        merged_snapshot["events"] = merged_events
+        merged_snapshot["milestones"] = merged_milestones
+        _progress_history[session_id] = {
+            "run_id": run_id,
+            "events": merged_events,
+            "milestones": merged_milestones,
+        }
+        return merged_snapshot
+
+
+
+def _get_session_or_404(session_id: str):
+    try:
+        return host.get(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
+
+def _get_run_for_session(session_id: str) -> Optional[RunState]:
+    with _runs_lock:
+        run_id = _session_runs.get(session_id)
+        if not run_id:
+            return None
+        return _runs.get(run_id)
+
+
+
+def _is_active_run(run: Optional[RunState]) -> bool:
+    return run is not None and run.status in {"pending", "running", "waiting_for_input"}
+
+
+
+def _release_session_slot(session_id: str) -> None:
+    with _runs_lock:
+        _session_slots.discard(session_id)
+
+
+
+def _clear_progress_history(session_id: str) -> None:
+    with _runs_lock:
+        _progress_history.pop(session_id, None)
+
+
+
+def _get_current_question(session) -> Optional[dict]:
+    getter = getattr(session, "current_question", None)
+    if callable(getter):
+        question = getter()
+        if isinstance(question, dict):
+            return question
+    return None
+
+
+
+def _option_indexes_from_question(question: dict) -> list[int]:
+    options = question.get("options", []) if isinstance(question, dict) else []
+    indexes: list[int] = []
+    for option in options:
+        if isinstance(option, dict):
+            idx = option.get("index")
+        else:
+            idx = getattr(option, "index", None)
+        if isinstance(idx, int):
+            indexes.append(idx)
+    return sorted(set(indexes))
+
+
+
+def _validate_option_index(question: dict, option_index: int) -> None:
+    valid_indexes = _option_indexes_from_question(question)
+    if not valid_indexes:
+        raise HTTPException(status_code=409, detail="Session is not waiting for an answer")
+
+    contiguous = valid_indexes == list(range(1, len(valid_indexes) + 1))
+    if option_index not in valid_indexes:
+        if contiguous:
+            detail = f"option_index must be between 1 and {valid_indexes[-1]}"
+        else:
+            detail = f"option_index must be one of {valid_indexes}"
+        raise HTTPException(status_code=400, detail=detail)
+
+
+
+def _get_run_payload_for_session(session_id: str) -> Optional[dict]:
+    with _runs_lock:
+        run_id = _session_runs.get(session_id)
+        if not run_id:
+            return None
+        run = _runs.get(run_id)
+        if run is None:
+            return None
+        return _serialize_run(run)
+
+
+
+def _require_no_active_run(session_id: str) -> None:
+    with _runs_lock:
+        run_id = _session_runs.get(session_id)
+        run = _runs.get(run_id) if run_id else None
+        if _is_active_run(run) or session_id in _session_slots:
+            raise HTTPException(status_code=409, detail="A run is already active for this session")
+        _session_slots.add(session_id)
+        _progress_history.pop(session_id, None)
+        if run_id and run is not None and not _is_active_run(run):
+            _session_runs.pop(session_id, None)
+
+
+
+def _claim_waiting_run_for_answer(session_id: str, option_index: int) -> RunState:
+    with _runs_lock:
+        run_id = _session_runs.get(session_id)
+        run = _runs.get(run_id) if run_id else None
+        if run is None or not _is_active_run(run):
+            raise HTTPException(status_code=409, detail="Session is not waiting for an answer")
+        if run.status != "waiting_for_input":
+            raise HTTPException(status_code=409, detail="Run is active and not waiting for input")
+        if run.current_question is None:
+            raise HTTPException(status_code=409, detail="Session is not waiting for an answer")
+        _validate_option_index(run.current_question, option_index)
+        _mark_run_running(run)
+        run.result = None
+        run.current_question = None
+        return run
+
+
+
+def _apply_response_to_run(run: RunState, response) -> None:
+    run.result = _serialize_send_response(response)
+    if response.is_question and response.questions:
+        run.status = "waiting_for_input"
+        run.waiting_for_input = True
+        run.current_question = _serialize_question(response.questions[0])
+        run.finished_at = None
+        return
+
+    run.status = "completed"
+    run.waiting_for_input = False
+    run.current_question = None
+    run.finished_at = _utcnow_iso()
+
+
+
+def _mark_run_running(run: RunState) -> None:
+    run.status = "running"
+    run.finished_at = None
+    run.error = None
+    run.waiting_for_input = False
+    run.current_question = None
+
+
+
+def _execute_send_run(run_id: str, session, message: str, timeout: int) -> None:
+    with _runs_lock:
+        run = _runs.get(run_id)
+        if run is None:
+            return
+        _mark_run_running(run)
+
+    try:
+        response = session.send(message, timeout=timeout)
+    except Exception as exc:
+        with _runs_lock:
+            run = _runs.get(run_id)
+            if run is None:
+                return
+            run.status = "error"
+            run.error = str(exc)
+            run.finished_at = _utcnow_iso()
+            _session_slots.discard(run.session_id)
+        return
+
+    with _runs_lock:
+        run = _runs.get(run_id)
+        if run is None:
+            return
+        _apply_response_to_run(run, response)
+        if run.status in {"completed", "error"}:
+            _session_slots.discard(run.session_id)
+
+
+
+def _continue_run_with_answer(run: RunState, session, option_index: int):
+    try:
+        response = session.answer(option_index=option_index)
+    except Exception as exc:
+        with _runs_lock:
+            current = _runs.get(run.run_id)
+            if current is not None:
+                current.status = "error"
+                current.error = str(exc)
+                current.finished_at = _utcnow_iso()
+                _session_slots.discard(current.session_id)
+        raise
+
+    with _runs_lock:
+        current = _runs.get(run.run_id)
+        if current is not None:
+            _apply_response_to_run(current, response)
+            if current.status in {"completed", "error"}:
+                _session_slots.discard(current.session_id)
+
+    return response
 
 
 @app.post("/api/sessions", response_model=SessionInfo)
@@ -128,70 +435,120 @@ def get_session(session_id: str):
 def destroy_session(session_id: str):
     try:
         host.destroy(session_id)
+        with _runs_lock:
+            run_id = _session_runs.pop(session_id, None)
+            if run_id:
+                _runs.pop(run_id, None)
+            _progress_history.pop(session_id, None)
+            _session_slots.discard(session_id)
         return {"status": "destroyed"}
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
 
 
+@app.post("/api/sessions/{session_id}/runs", response_model=RunResponse)
+def create_run(session_id: str, req: SendRequest):
+    session = _get_session_or_404(session_id)
+
+    with _runs_lock:
+        active_run_id = _session_runs.get(session_id)
+        active_run = _runs.get(active_run_id) if active_run_id else None
+        if _is_active_run(active_run) or session_id in _session_slots:
+            raise HTTPException(status_code=409, detail="A run is already active for this session")
+
+        run_id = uuid.uuid4().hex
+        run = RunState(
+            run_id=run_id,
+            session_id=session_id,
+            status="pending",
+            started_at=_utcnow_iso(),
+        )
+        _runs[run_id] = run
+        _session_runs[session_id] = run_id
+        _progress_history.pop(session_id, None)
+        _session_slots.add(session_id)
+
+    worker = threading.Thread(target=_execute_send_run, args=(run_id, session, req.message, req.timeout), daemon=True)
+    worker.start()
+
+    with _runs_lock:
+        current = _runs[run_id]
+        return RunResponse(**_serialize_run(current))
+
+
+@app.get("/api/sessions/{session_id}/runs/{run_id}", response_model=RunResponse)
+def get_run(session_id: str, run_id: str):
+    _get_session_or_404(session_id)
+    with _runs_lock:
+        run = _runs.get(run_id)
+        if run is None or run.session_id != session_id:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return RunResponse(**_serialize_run(run))
+
+
+@app.get("/api/sessions/{session_id}/progress")
+def get_progress(session_id: str):
+    session = _get_session_or_404(session_id)
+    run_payload = _get_run_payload_for_session(session_id)
+    snapshot = session.progress_snapshot()
+    raw_snapshot = asdict(snapshot)
+
+    if run_payload is not None and run_payload["status"] == "pending":
+        snapshot_data = raw_snapshot
+    else:
+        snapshot_data = _merge_progress_snapshot(
+            session_id,
+            run_payload["run_id"] if run_payload is not None else None,
+            raw_snapshot,
+        )
+    return {
+        "snapshot": snapshot_data,
+        "run": run_payload,
+    }
+
+
 @app.post("/api/sessions/{session_id}/send", response_model=SendResponse)
 def send_message(session_id: str, req: SendRequest):
+    session = _get_session_or_404(session_id)
+    _require_no_active_run(session_id)
     try:
-        session = host.get(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    r = session.send(req.message, timeout=req.timeout)
-    return SendResponse(
-        text=r.text,
-        is_question=r.is_question,
-        questions=[
-            {
-                "question": q["question"],
-                "options": [{"label": o.label, "index": o.index} for o in q["options"]],
-            }
-            for q in r.questions
-        ],
-        role=r.role,
-    )
+        response = session.send(req.message, timeout=req.timeout)
+    finally:
+        _release_session_slot(session_id)
+    return SendResponse(**_serialize_send_response(response))
 
 
 @app.post("/api/sessions/{session_id}/answer", response_model=SendResponse)
 def answer_question(session_id: str, req: AnswerRequest):
-    try:
-        session = host.get(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = _get_session_or_404(session_id)
+    run = _get_run_for_session(session_id)
 
-    r = session.answer(option_index=req.option_index)
-    return SendResponse(
-        text=r.text,
-        is_question=r.is_question,
-        questions=[
-            {
-                "question": q["question"],
-                "options": [{"label": o.label, "index": o.index} for o in q["options"]],
-            }
-            for q in r.questions
-        ],
-        role=r.role,
-    )
+    if _is_active_run(run):
+        claimed_run = _claim_waiting_run_for_answer(session_id, req.option_index)
+        response = _continue_run_with_answer(claimed_run, session, req.option_index)
+    else:
+        _require_no_active_run(session_id)
+        try:
+            question = _get_current_question(session)
+            if question is None:
+                raise HTTPException(status_code=409, detail="Session is not waiting for an answer")
+            _validate_option_index(question, req.option_index)
+            response = session.answer(option_index=req.option_index)
+        finally:
+            _release_session_slot(session_id)
+
+    return SendResponse(**_serialize_send_response(response))
 
 
 @app.get("/api/sessions/{session_id}/files")
 def list_files(session_id: str):
-    try:
-        session = host.get(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = _get_session_or_404(session_id)
     return {"files": session.files()}
 
 
 @app.get("/api/sessions/{session_id}/files/{path:path}")
 def download_file(session_id: str, path: str):
-    try:
-        session = host.get(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = _get_session_or_404(session_id)
     try:
         data = session.read_file(path)
         # Guess content type
@@ -214,10 +571,7 @@ def download_file(session_id: str, path: str):
 async def upload_file(session_id: str, request: Request):
     """Upload a file to the session's working directory."""
 
-    try:
-        session = host.get(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = _get_session_or_404(session_id)
 
     # Parse multipart form data
     form = await request.form()
@@ -236,10 +590,7 @@ async def upload_file(session_id: str, request: Request):
 
 @app.get("/api/sessions/{session_id}/conversation")
 def get_conversation(session_id: str):
-    try:
-        session = host.get(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = _get_session_or_404(session_id)
     return {"conversation": session.conversation()}
 
 
