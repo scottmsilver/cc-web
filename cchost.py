@@ -30,9 +30,11 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import libtmux
+
+from progress import derive_progress_snapshot, normalize_jsonl_entries
 
 
 @dataclass
@@ -102,6 +104,27 @@ class CCSession:
             except json.JSONDecodeError:
                 pass
         return parsed
+
+    def _read_all_transcript_entries(self) -> list[dict[str, Any]]:
+        """Read the full JSONL transcript without advancing incremental state."""
+        if not self._jsonl_path or not os.path.exists(self._jsonl_path):
+            self._jsonl_path = self._find_jsonl()
+        if not self._jsonl_path or not os.path.exists(self._jsonl_path):
+            return []
+
+        entries: list[dict[str, Any]] = []
+        with open(self._jsonl_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(entry, dict):
+                    entries.append(entry)
+        return entries
 
     def _extract_text(self, msg_data: dict) -> str:
         """Extract text content from a JSONL message entry."""
@@ -201,9 +224,21 @@ class CCSession:
             }
         return None
 
+    def current_question(self) -> Optional[dict]:
+        """Return the active AskUserQuestion prompt, if one is visible."""
+        return self._parse_question_screen()
+
+    def question_status(self) -> bool:
+        """Return whether Claude is currently showing an AskUserQuestion prompt."""
+        return self.current_question() is not None
+
+    def prompt_status(self) -> bool:
+        """Return whether the tmux pane shows Claude Code's idle prompt."""
+        return self._is_tmux_idle()
+
     def _is_asking_question(self) -> bool:
         """Check if Claude is showing an AskUserQuestion prompt."""
-        return self._parse_question_screen() is not None
+        return self.question_status()
 
     def _is_tmux_idle(self) -> bool:
         """Check if the tmux pane shows Claude Code's idle prompt (❯)."""
@@ -216,6 +251,18 @@ class CCSession:
             return False
         except Exception:
             return False
+
+    def progress_entries(self) -> list:
+        """Return normalized progress events from the full transcript."""
+        return normalize_jsonl_entries(self._read_all_transcript_entries())
+
+    def progress_snapshot(self):
+        """Return a derived progress snapshot for the current session."""
+        return derive_progress_snapshot(
+            self.progress_entries(),
+            is_question=self.question_status(),
+            is_prompt=self.prompt_status(),
+        )
 
     def send(self, message: str, timeout: int = 600) -> Response:
         """
