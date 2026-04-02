@@ -303,47 +303,60 @@ def chat_completions(req: OAIChatRequest):
     # Get or create session
     session, conv_hash = _get_or_create_oai_session(req.messages)
 
-    # Send to Claude Code (blocking)
-    r = session.send(last_user_msg, timeout=900)
-
     response_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
     if req.stream:
-        # SSE streaming response — send the full response as a single chunk
-        # (we don't have real streaming from Claude Code, but LibreChat needs SSE format)
+        # SSE streaming — send keepalive chunks while Claude works,
+        # then send the actual response when done.
         def generate_sse():
-            # Send the content as one chunk
-            chunk = {
+            import time as t
+
+            # Send message to Claude (non-blocking — we start it in a thread)
+            result_holder = {"response": None, "done": False}
+
+            def run_send():
+                result_holder["response"] = session.send(last_user_msg, timeout=900)
+                result_holder["done"] = True
+
+            send_thread = threading.Thread(target=run_send, daemon=True)
+            send_thread.start()
+
+            # Stream keepalive / progress while waiting
+            # Send an initial "thinking" indicator
+            thinking_chunk = {
                 "id": response_id,
                 "object": "chat.completion.chunk",
                 "created": int(_time.time()),
                 "model": "claude-code",
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {
-                            "role": "assistant",
-                            "content": r.text,
-                        },
-                        "finish_reason": None,
-                    }
-                ],
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
             }
-            yield f"data: {json.dumps(chunk)}\n\n"
+            yield f"data: {json.dumps(thinking_chunk)}\n\n"
 
-            # Send the finish chunk
+            # Poll until done, sending SSE comments as keepalive every 10s
+            while not result_holder["done"]:
+                t.sleep(2)
+                # SSE comment keeps connection alive (not a data event)
+                yield ": keepalive\n\n"
+
+            # Send the actual response
+            r = result_holder["response"]
+            if r and r.text:
+                content_chunk = {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(_time.time()),
+                    "model": "claude-code",
+                    "choices": [{"index": 0, "delta": {"content": r.text}, "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(content_chunk)}\n\n"
+
+            # Finish
             finish_chunk = {
                 "id": response_id,
                 "object": "chat.completion.chunk",
                 "created": int(_time.time()),
                 "model": "claude-code",
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": "stop",
-                    }
-                ],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             }
             yield f"data: {json.dumps(finish_chunk)}\n\n"
             yield "data: [DONE]\n\n"
@@ -357,7 +370,8 @@ def chat_completions(req: OAIChatRequest):
             },
         )
     else:
-        # Non-streaming response
+        # Non-streaming — blocks until done
+        r = session.send(last_user_msg, timeout=900)
         return {
             "id": response_id,
             "object": "chat.completion",
