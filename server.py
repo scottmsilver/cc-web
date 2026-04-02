@@ -25,7 +25,7 @@ from typing import Optional
 
 import uvicorn
 from cchost import CCHost, CCSession
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.responses import Response as HTTPResponse
 from fastapi.responses import StreamingResponse
@@ -208,6 +208,30 @@ def download_file(session_id: str, path: str):
         return HTTPResponse(content=data, media_type=media_type)
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/sessions/{session_id}/upload")
+async def upload_file(session_id: str, request: Request):
+    """Upload a file to the session's working directory."""
+
+    try:
+        session = host.get(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Parse multipart form data
+    form = await request.form()
+    uploaded = []
+    for key in form:
+        file = form[key]
+        if hasattr(file, "filename") and file.filename:
+            dest = os.path.join(session.working_dir, file.filename)
+            content = await file.read()
+            with open(dest, "wb") as f:
+                f.write(content)
+            uploaded.append(file.filename)
+
+    return {"uploaded": uploaded, "working_dir": session.working_dir}
 
 
 @app.get("/api/sessions/{session_id}/conversation")
