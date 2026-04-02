@@ -288,61 +288,30 @@ class CCSession:
         pane = self._tmux_session.active_window.active_pane
         pane.send_keys(message, enter=True)
 
-        # Watch for response + idle signal.
-        # Key insight: Claude's multi-step analysis produces intermediate
-        # "idle" states between tool calls. We must NOT return during these.
-        # Only return when:
-        # - We have assistant text
-        # - The last assistant entry has NO tool_use blocks (not mid-chain)
-        # - tmux shows idle (❯)
-        # - No new JSONL content for 2 seconds
+        # Watch for response using TWO signals:
+        # 1. JSONL for response text (assistant messages)
+        # 2. Hook events file (.cchost-events.jsonl) for definitive Stop event
+        #
+        # The Stop hook fires when Claude finishes responding — no guessing.
         start = time.time()
         last_assistant_text = ""
         last_assistant_raw = {}
-        last_new_content_time = time.time()
-        has_pending_tool_use = False
-        saw_any_tool_use = False  # True if this turn involved any tools
+        events_path = os.path.join(self.working_dir, ".cchost-events.jsonl")
+        events_line_count = 0
+        if os.path.exists(events_path):
+            with open(events_path, "r") as f:
+                events_line_count = len(f.readlines())
 
         while time.time() - start < timeout:
+            # Read new JSONL entries for response text
             new_lines = self._read_new_lines()
-
             for entry in new_lines:
                 entry_type = entry.get("type", "")
-                last_new_content_time = time.time()
-
                 if entry_type == "assistant":
                     text = self._extract_text(entry)
-                    content = entry.get("message", {}).get("content", [])
-                    entry_has_tools = False
-
-                    if isinstance(content, list):
-                        entry_has_tools = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content)
-
-                    if entry_has_tools:
-                        # This entry dispatched tools — Claude will continue
-                        has_pending_tool_use = True
-                        saw_any_tool_use = True
-                    else:
-                        has_pending_tool_use = False
-
-                    # Only update the "final" response text when the entry
-                    # has text and does NOT also dispatch tools. Entries with
-                    # both text and tool_use are intermediate status messages
-                    # ("Let me read the remaining pages" + Read tool).
-                    if text and not entry_has_tools:
+                    if text:
                         last_assistant_text = text
                         last_assistant_raw = entry
-
-                elif entry_type == "user":
-                    # A user entry with tool_result means a tool completed.
-                    # Claude will produce another assistant turn — keep waiting.
-                    content = entry.get("message", {}).get("content", [])
-                    if isinstance(content, list) and any(
-                        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
-                    ):
-                        # Tool resolved, but Claude hasn't spoken yet
-                        has_pending_tool_use = False
-
                 elif entry_type == "last-prompt":
                     return Response(
                         text=last_assistant_text,
@@ -350,7 +319,7 @@ class CCSession:
                         raw=last_assistant_raw,
                     )
 
-            # Check for AskUserQuestion
+            # Check for AskUserQuestion (tmux screen)
             question = self._parse_question_screen()
             if question:
                 return Response(
@@ -360,147 +329,35 @@ class CCSession:
                     questions=[question],
                 )
 
-            # Done detection: require STABLE idle.
-            # Check tmux idle, then wait, then check again.
-            # If Claude is between tool calls, the idle will disappear
-            # when the next tool starts. If Claude is truly done, idle
-            # persists across both checks.
-            if last_assistant_text and not has_pending_tool_use:
-                time_since_content = time.time() - last_new_content_time
-                settle_time = 5.0 if saw_any_tool_use else 2.0
-                if time_since_content >= settle_time and self._is_tmux_idle():
-                    # First idle check passed. Wait 3 more seconds and
-                    # verify no new JSONL lines appeared and tmux is still idle.
-                    time.sleep(3.0)
-                    recheck_lines = self._read_new_lines()
-                    new_content_during_settle = False
-                    for entry in recheck_lines:
-                        et = entry.get("type", "")
-                        last_new_content_time = time.time()
-                        new_content_during_settle = True
-                        if et == "assistant":
-                            text = self._extract_text(entry)
-                            content = entry.get("message", {}).get("content", [])
-                            entry_has_tools = isinstance(content, list) and any(
-                                isinstance(b, dict) and b.get("type") == "tool_use" for b in content
+            # Check hook events for Stop signal
+            if os.path.exists(events_path):
+                with open(events_path, "r") as f:
+                    event_lines = f.readlines()
+                new_events = event_lines[events_line_count:]
+                events_line_count = len(event_lines)
+
+                for line in new_events:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        evt = json.loads(line)
+                        if evt.get("_cchost_event") == "Stop":
+                            # Definitive done — read any final JSONL entries
+                            time.sleep(0.5)
+                            for entry in self._read_new_lines():
+                                if entry.get("type") == "assistant":
+                                    text = self._extract_text(entry)
+                                    if text:
+                                        last_assistant_text = text
+                                        last_assistant_raw = entry
+                            return Response(
+                                text=last_assistant_text,
+                                role="assistant",
+                                raw=last_assistant_raw,
                             )
-                            if entry_has_tools:
-                                has_pending_tool_use = True
-                            elif text:
-                                last_assistant_text = text
-                                last_assistant_raw = entry
-                        elif et == "user":
-                            content = entry.get("message", {}).get("content", [])
-                            if isinstance(content, list) and any(
-                                isinstance(b, dict) and b.get("type") == "tool_result" for b in content
-                            ):
-                                has_pending_tool_use = False
-
-                    if not new_content_during_settle and self._is_tmux_idle():
-                        # Truly done — no new content during settle and still idle
-                        return Response(
-                            text=last_assistant_text,
-                            role="assistant",
-                            raw=last_assistant_raw,
-                        )
-                    # Otherwise, new content arrived or idle disappeared — keep looping
-
-            time.sleep(0.5)
-
-        # Timeout — return whatever we have
-        return Response(
-            text=last_assistant_text or "(timeout — no response captured)",
-            role="assistant",
-            raw=last_assistant_raw,
-        )
-
-    def answer(self, option_index: int = 1) -> Response:
-        """
-        Answer an AskUserQuestion by selecting an option.
-
-        Args:
-            option_index: 1-based index of the option to select.
-                         Default 1 selects the first (usually recommended) option.
-
-        The AskUserQuestion picker uses arrow keys to navigate and Enter to select.
-        Option 1 is pre-selected by default, so Enter alone picks option 1.
-        For other options, we press Down arrow (option_index - 1) times, then Enter.
-
-        After answering, if there are more questions in the same AskUserQuestion
-        batch (tabs at the top like ☐ Markup ☐ Retention), this returns the
-        next question. If all questions are answered, it submits and returns
-        the final response.
-        """
-        if self._tmux_session is None:
-            raise RuntimeError(f"Session {self.id} is destroyed")
-
-        pane = self._tmux_session.active_window.active_pane
-
-        # Navigate to the desired option
-        if option_index > 1:
-            for _ in range(option_index - 1):
-                pane.send_keys("Down", enter=False)
-                time.sleep(0.2)
-
-        # Select it
-        pane.send_keys("", enter=True)
-        time.sleep(1)
-
-        # Check if there's another question, a submit screen, or we're back to idle
-        # Poll for up to 5 seconds
-        for _ in range(10):
-            # Check for another question
-            question = self._parse_question_screen()
-            if question:
-                return Response(
-                    text=question["question"],
-                    role="assistant",
-                    is_question=True,
-                    questions=[question],
-                )
-
-            # Check for submit prompt
-            captured = pane.capture_pane(start=-10)
-            screen = "\n".join(captured)
-            if "Submit" in screen and "Ready to submit" in screen:
-                # Auto-submit
-                pane.send_keys("", enter=True)
-                time.sleep(2)
-                # Now wait for the actual response
-                return self._wait_after_answer()
-
-            # Check if idle (question was the only one, no submit needed)
-            if self._is_tmux_idle():
-                return self._wait_after_answer()
-
-            time.sleep(0.5)
-
-        # Fell through — try waiting for response
-        return self._wait_after_answer()
-
-    def _wait_after_answer(self, timeout: int = 60) -> Response:
-        """Wait for Claude's response after answering a question."""
-        start = time.time()
-        while time.time() - start < timeout:
-            new_lines = self._read_new_lines()
-            for entry in new_lines:
-                if entry.get("type") == "assistant":
-                    text = self._extract_text(entry)
-                    if text:
-                        # Check if idle
-                        time.sleep(1)
-                        if self._is_tmux_idle():
-                            return Response(text=text, role="assistant", raw=entry)
-
-            # Check for another question
-            question = self._parse_question_screen()
-            if question:
-                return Response(
-                    text=question["question"],
-                    role="assistant",
-                    is_question=True,
-                    questions=[question],
-                )
+                    except json.JSONDecodeError:
+                        pass
 
             time.sleep(0.5)
 
