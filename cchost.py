@@ -81,7 +81,7 @@ class CCSession:
 
     def _read_new_lines(self) -> list[dict]:
         """Read new lines from the JSONL since last check."""
-        if not self._jsonl_path:
+        if not self._jsonl_path or not os.path.exists(self._jsonl_path):
             self._jsonl_path = self._find_jsonl()
         if not self._jsonl_path or not os.path.exists(self._jsonl_path):
             return []
@@ -121,6 +121,17 @@ class CCSession:
 
     def _wait_for_ready(self, timeout: int = 30) -> None:
         """Wait for Claude Code to start and accept the trust prompt."""
+        # Clean up old JSONL files from previous sessions in the same workdir
+        slug = self.working_dir.replace("/", "-").lstrip("-")
+        project_dir = os.path.expanduser(f"~/.claude/projects/-{slug}")
+        if os.path.isdir(project_dir):
+            old_files = glob.glob(os.path.join(project_dir, "*.jsonl"))
+            for f in old_files:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
         # Wait for tmux pane to have content
         pane = self._tmux_session.active_window.active_pane
         start = time.time()
@@ -219,12 +230,13 @@ class CCSession:
         if self._tmux_session is None:
             raise RuntimeError(f"Session {self.id} is destroyed")
 
-        # Record where we are in the JSONL
-        if not self._jsonl_path:
-            self._jsonl_path = self._find_jsonl()
+        # Always re-find the JSONL (session ID may have changed, or new file created)
+        self._jsonl_path = self._find_jsonl()
         if self._jsonl_path:
             with open(self._jsonl_path, "r") as f:
                 self._last_line_count = len(f.readlines())
+        else:
+            self._last_line_count = 0
 
         # Type the message into Claude Code
         pane = self._tmux_session.active_window.active_pane
