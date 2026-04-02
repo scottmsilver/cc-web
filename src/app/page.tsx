@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
 
+import { ChatInput } from "@/components/chat-input";
+import { linkifyFiles } from "@/components/file-link";
 import { ProgressPanel } from "@/components/progress-panel";
 import type { ProgressResponse, RunResponse } from "@/lib/progress";
 
@@ -461,15 +463,13 @@ export default function Chat() {
     setIsLoading(true);
   };
 
-  const sendMessage = async (e: FormEvent) => {
-    e.preventDefault();
-    const message = input.trim();
+  const sendMessage = async (messageText: string) => {
+    const message = messageText.trim();
     if (!message || isLoading) {
       return;
     }
 
     setMessages((prev) => [...prev, { id: makeMessageId("user"), role: "user", content: message }]);
-    setInput("");
     setIsLoading(true);
 
     try {
@@ -668,17 +668,34 @@ export default function Chat() {
                     }`}
                   >
                     {message.role === "assistant" ? (
-                      <div
-                        className="prose prose-invert prose-sm max-w-none
-                          prose-pre:bg-zinc-900 prose-pre:text-zinc-300
-                          prose-code:rounded prose-code:bg-zinc-900 prose-code:px-1 prose-code:text-rose-400
-                          prose-table:text-zinc-300 prose-th:text-zinc-200
-                          prose-a:text-rose-400 prose-strong:text-zinc-100"
-                      >
-                        <ReactMarkdown>{message.content}</ReactMarkdown>
+                      <div className="prose-chat">
+                        <ReactMarkdown
+                          components={{
+                            // Make code blocks with file paths clickable
+                            code: ({ children, className }) => {
+                              const text = String(children).trim();
+                              const isFilePath = /\.\w{2,4}$/.test(text) && !className;
+                              if (isFilePath && activeSession) {
+                                return (
+                                  <a
+                                    href={`${CCHOST_API}/api/sessions/${activeSession}/files/${encodeURIComponent(text)}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-rose-400 hover:text-rose-300 text-xs font-mono no-underline border border-zinc-700 hover:border-rose-500/50"
+                                  >
+                                    {text} <span className="opacity-40 text-[10px]">↓</span>
+                                  </a>
+                                );
+                              }
+                              return <code className={className}>{children}</code>;
+                            },
+                          }}
+                        >
+                          {message.content}
+                        </ReactMarkdown>
                       </div>
                     ) : (
-                      <pre className="whitespace-pre-wrap font-sans">{message.content}</pre>
+                      <pre className="whitespace-pre-wrap font-sans text-sm">{message.content}</pre>
                     )}
                   </div>
                 </div>
@@ -696,24 +713,12 @@ export default function Chat() {
 
               <div ref={messagesEndRef} />
             </div>
-            <form onSubmit={sendMessage} className="border-t border-zinc-800 p-4">
-              <div className="flex gap-2">
-                <input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  placeholder="Message Claude Code..."
-                  disabled={isLoading}
-                  className="flex-1 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-sm placeholder-zinc-600 focus:border-rose-500 focus:outline-none"
-                />
-                <button
-                  type="submit"
-                  disabled={isLoading || !input.trim()}
-                  className="rounded-xl bg-rose-600 px-6 py-3 text-sm font-medium transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-zinc-700"
-                >
-                  Send
-                </button>
-              </div>
-            </form>
+            <ChatInput
+              onSend={sendMessage}
+              disabled={isLoading}
+              sessionId={activeSession}
+              onFilesUploaded={() => activeSession && fetchFiles(activeSession)}
+            />
           </div>
         )}
 
