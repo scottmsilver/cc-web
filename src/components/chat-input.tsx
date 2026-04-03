@@ -47,7 +47,10 @@ export function ChatInput({
       );
       const data = await res.json();
       const uploaded = data.uploaded || [];
-      onFilesUploaded?.(uploaded);
+      // Immediately notify parent so Files tab refreshes
+      if (uploaded.length > 0) {
+        onFilesUploaded?.(uploaded);
+      }
       return uploaded;
     } catch {
       return [];
@@ -79,14 +82,14 @@ export function ChatInput({
       fileNames = await uploadFiles(pendingFiles.map((f) => f.file));
     }
 
-    // Build message with file references
+    // Build message with @file references (Claude Code native format)
     let message = input.trim();
     if (fileNames.length > 0) {
-      const fileList = fileNames.join(", ");
+      const atRefs = fileNames.map((f) => `@${f}`).join(" ");
       if (message) {
-        message = `[Attached: ${fileList}]\n\n${message}`;
+        message = `${atRefs} ${message}`;
       } else {
-        message = `I've attached these files to the working directory: ${fileList}. What would you like me to do with them?`;
+        message = `${atRefs} What would you like me to do with these files?`;
       }
     }
 

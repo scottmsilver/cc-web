@@ -701,13 +701,14 @@ export default function Chat() {
                 </div>
               ))}
 
-              {showProgressPanel && progress ? (
-                <ProgressPanel progress={progress} onAnswer={isAnswering ? undefined : answerQuestion} />
-              ) : null}
-
-              {isLoading && !showProgressPanel && (
+              {isLoading && (
                 <div className="flex justify-start">
-                  <div className="animate-pulse rounded-2xl bg-[#2d2d2d] px-4 py-3 text-sm text-[#a09a94]">Claude is working...</div>
+                  <div className="flex items-center gap-2 rounded-2xl bg-[#2d2d2d] px-4 py-3 text-sm text-[#a09a94]">
+                    <span className="inline-block w-2 h-2 rounded-full bg-[#d77757] animate-pulse" />
+                    {progress?.snapshot?.primary_label
+                      ? `${progress.snapshot.primary_label}...`
+                      : "Claude is working..."}
+                  </div>
                 </div>
               )}
 
@@ -777,6 +778,24 @@ export default function Chat() {
           </div>
         )}
       </div>
+
+      {/* Right drawer: Progress / Debug panel */}
+      {showProgressPanel && progress && (
+        <div className="w-80 border-l border-[#3a3a3a] flex flex-col bg-[#1a1a1a] overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-[#3a3a3a]">
+            <h2 className="text-xs font-medium uppercase tracking-wider text-[#8a8580]">Activity</h2>
+            <button
+              onClick={() => setProgress(null)}
+              className="text-[#6a6560] hover:text-[#a09a94] text-xs"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3">
+            <ProgressPanel progress={progress} onAnswer={isAnswering ? undefined : answerQuestion} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
