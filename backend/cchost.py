@@ -690,6 +690,117 @@ class CCSession:
         """Send Ctrl+C (escape) to Claude Code."""
         self.send_keys("C-c")
 
+    def btw(self, question: str, timeout: int = 30) -> str:
+        """Ask a /btw side question. Ephemeral — doesn't enter conversation history.
+
+        Sends '/btw <question>' to the tmux pane, waits for the response overlay,
+        captures the text, and dismisses it with Escape.
+        """
+        if self._tmux_session is None:
+            raise RuntimeError(f"Session {self.id} is destroyed")
+        if not self._is_tmux_idle():
+            raise RuntimeError("Session is busy")
+
+        pane = self._tmux_session.active_window.active_pane
+        pane.send_keys(f"/btw {question}", enter=True)
+
+        # Wait for the response overlay (ends with "to dismiss")
+        start = time.time()
+        response_lines: list[str] = []
+        q_prefix = question[:30]
+        while time.time() - start < timeout:
+            time.sleep(1.0)
+            content = pane.cmd("capture-pane", "-p").stdout
+            full_text = "\n".join(content) if isinstance(content, list) else str(content)
+            if "to dismiss" in full_text.lower():
+                lines = full_text.split("\n")
+                # The overlay echoes "/btw <question>" then shows the answer.
+                # Find the LAST occurrence of the question echo, capture after it.
+                last_q_idx = -1
+                for i, line in enumerate(lines):
+                    if q_prefix in line and "/btw" in line:
+                        last_q_idx = i
+                # Capture from after the last question echo to "to dismiss"
+                if last_q_idx >= 0:
+                    for line in lines[last_q_idx + 1 :]:
+                        stripped = line.strip()
+                        if "to dismiss" in stripped.lower():
+                            break
+                        if stripped:
+                            response_lines.append(stripped)
+                break
+
+        # Dismiss the overlay
+        pane.send_keys("Escape", enter=False)
+        time.sleep(0.3)
+
+        return "\n".join(response_lines)
+
+    def summary(self) -> dict:
+        """Return a title and status for this session.
+
+        Uses /btw to ask the session itself for a summary (full conversation context).
+        Falls back to raw JSONL extraction if /btw fails or session is busy.
+        Results are cached in .cchost-summary.json.
+        """
+        cache_path = os.path.join(self.working_dir, ".cchost-summary.json")
+        jsonl_path = self._ensure_jsonl_path()
+
+        jsonl_size = 0
+        if jsonl_path and os.path.exists(jsonl_path):
+            jsonl_size = os.path.getsize(jsonl_path)
+
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r") as f:
+                    cached = json.load(f)
+                cached_size = cached.get("_jsonl_size", 0)
+                if jsonl_size - cached_size < max(cached_size * 0.1, 50_000):
+                    return {"title": cached.get("title", ""), "status": cached.get("status", "")}
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        title = ""
+        status = ""
+
+        # Try /btw — the session has full context
+        try:
+            if self._is_tmux_idle():
+                response = self.btw(
+                    'Respond ONLY with JSON, no markdown: {"title": "<3-6 word session title>", "status": "<current activity under 10 words>"}'
+                )
+                # Find JSON object in response (may span wrapped lines)
+                flat = " ".join(response.split())
+                match = re.search(r'\{[^{}]*"title"[^{}]*\}', flat)
+                if match:
+                    parsed = json.loads(match.group())
+                    title = parsed.get("title", "")[:80]
+                    status = parsed.get("status", "")[:120]
+        except Exception as e:
+            logger.debug("btw summary failed: %s", e)
+
+        # Fallback: raw JSONL
+        if not title:
+            records = self._read_all_transcript_entries()
+            for record in records:
+                rtype = record.get("type", "")
+                if rtype == "user" and not title:
+                    text = self._extract_text(record).strip()
+                    if text and len(text) < 2000:
+                        title = text[:80]
+                elif rtype == "assistant":
+                    text = self._extract_text(record).strip()
+                    if text:
+                        status = text[:120]
+
+        try:
+            with open(cache_path, "w") as f:
+                json.dump({"title": title, "status": status, "_jsonl_size": jsonl_size}, f)
+        except OSError:
+            pass
+
+        return {"title": title, "status": status}
+
     def conversation(self) -> list[dict]:
         """Reconstruct full conversation from the JSONL transcript.
 

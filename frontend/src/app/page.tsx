@@ -45,6 +45,8 @@ type Message = {
 type SessionRecord = {
   id: string;
   working_dir?: string | null;
+  title?: string;
+  status?: string;
 };
 
 type ConversationEntry = {
@@ -81,12 +83,12 @@ function normalizeSessionRecord(value: unknown): SessionRecord | null {
     return null;
   }
 
+  const v = value as Record<string, unknown>;
   return {
     id,
-    working_dir:
-      typeof (value as { working_dir?: unknown }).working_dir === "string"
-        ? (value as { working_dir: string }).working_dir
-        : null,
+    working_dir: typeof v.working_dir === "string" ? v.working_dir : null,
+    title: typeof v.title === "string" ? v.title : undefined,
+    status: typeof v.status === "string" ? v.status : undefined,
   };
 }
 

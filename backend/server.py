@@ -80,6 +80,8 @@ class SessionInfo(BaseModel):
     working_dir: str
     state: str
     created_at: str
+    title: str = ""
+    status: str = ""
 
 
 class QuestionOptionResponse(BaseModel):
@@ -420,26 +422,34 @@ def create_session(req: CreateSessionRequest):
 
 @app.get("/api/sessions", response_model=list[SessionInfo])
 def list_sessions():
-    return [
-        SessionInfo(
-            id=s.id,
-            working_dir=s.working_dir,
-            state="active",
-            created_at=s.created_at.isoformat(),
+    results = []
+    for s in host.list():
+        summary = s.summary()
+        results.append(
+            SessionInfo(
+                id=s.id,
+                working_dir=s.working_dir,
+                state="active",
+                created_at=s.created_at.isoformat(),
+                title=summary.get("title", ""),
+                status=summary.get("status", ""),
+            )
         )
-        for s in host.list()
-    ]
+    return results
 
 
 @app.get("/api/sessions/{session_id}", response_model=SessionInfo)
 def get_session(session_id: str):
     try:
         s = host.get(session_id)
+        summary = s.summary()
         return SessionInfo(
             id=s.id,
             working_dir=s.working_dir,
             state="active",
             created_at=s.created_at.isoformat(),
+            title=summary.get("title", ""),
+            status=summary.get("status", ""),
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -542,6 +552,21 @@ def answer_question(session_id: str, req: AnswerRequest):
             run_manager.release_session_slot(session_id)
 
     return SendResponse(**_serialize_send_response(response))
+
+
+class BtwRequest(BaseModel):
+    question: str
+
+
+@app.post("/api/sessions/{session_id}/btw")
+def btw(session_id: str, req: BtwRequest):
+    """Ask a /btw side question — ephemeral, doesn't enter conversation history."""
+    session = _get_session_or_404(session_id)
+    try:
+        answer = session.btw(req.question)
+        return {"answer": answer}
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @app.post("/api/sessions/{session_id}/toggle")
