@@ -188,10 +188,10 @@ export function ChatInput({
               key={f.originalName}
               className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border ${
                 f.status === "uploading"
-                  ? "bg-yellow-50 border-yellow-300 text-yellow-800"
+                  ? "bg-th-warning-bg border-th-warning-border text-th-warning-text"
                   : f.status === "error"
-                    ? "bg-red-50 border-red-300 text-red-700"
-                    : "bg-green-50 border-green-300 text-green-800"
+                    ? "bg-th-error-bg border-th-error-text/30 text-th-error-text"
+                    : "bg-th-success-bg border-th-success-text/30 text-th-success-text"
               }`}
             >
               <span>

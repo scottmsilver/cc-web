@@ -43,7 +43,7 @@ export function SessionSelector({
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1.5 rounded-lg border border-th-border px-3 py-1.5 text-xs text-th-text transition-colors hover:border-th-accent hover:text-th-text"
       >
-        <span className="max-w-[200px] truncate">
+        <span className="max-w-[200px] truncate transition-opacity duration-500">
           {activeSession
             ? sessions.find((s) => s.id === activeSession)?.title || activeSession
             : "New session"}
@@ -75,7 +75,7 @@ export function SessionSelector({
                     onClick={() => { onSelectSession(session.id); setOpen(false); }}
                     className="flex-1 min-w-0 text-left"
                   >
-                    <div className="truncate text-sm">{session.title || session.id}</div>
+                    <div className="truncate text-sm transition-opacity duration-300">{session.title || session.id}</div>
                     {session.status && (
                       <div className="truncate text-xs text-th-text-faint">{session.status}</div>
                     )}

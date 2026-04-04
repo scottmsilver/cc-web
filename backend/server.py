@@ -25,6 +25,7 @@ from typing import Optional
 
 logger = logging.getLogger("cchost")
 
+
 import uvicorn
 from cchost import CCHost, CCSession
 from fastapi import FastAPI, HTTPException, Request
@@ -564,9 +565,20 @@ def btw(session_id: str, req: BtwRequest):
     session = _get_session_or_404(session_id)
     try:
         answer = session.btw(req.question)
-        return {"answer": answer}
+        return {"answer": answer, "timed_out": not bool(answer)}
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.post("/api/sessions/{session_id}/refresh-summary")
+def refresh_summary(session_id: str):
+    """Trigger a single session's summary refresh (calls /btw in background)."""
+    session = _get_session_or_404(session_id)
+    try:
+        result = session.generate_summary()
+        return {"title": result.get("title", ""), "status": result.get("status", "")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/sessions/{session_id}/toggle")
@@ -679,6 +691,29 @@ _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 @app.get("/ui")
 def chat_ui():
     return FileResponse(os.path.join(_STATIC_DIR, "chat.html"), media_type="text/html")
+
+
+# ============================================================
+# Background summary refresh
+# ============================================================
+
+
+def _background_summary_refresh():
+    """Periodically refresh session summaries via /btw in the background."""
+    while True:
+        time.sleep(60)
+        try:
+            for session in host.list():
+                try:
+                    session.generate_summary()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+_summary_thread = threading.Thread(target=_background_summary_refresh, daemon=True)
+_summary_thread.start()
 
 
 # ============================================================

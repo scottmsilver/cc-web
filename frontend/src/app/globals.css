@@ -17,6 +17,13 @@
   --th-code-text: #c2410c;
   --th-term-bg: #111827;
   --th-term-text: #4ade80;
+  --th-warning-bg: #fffbeb;
+  --th-warning-border: #fcd34d;
+  --th-warning-text: #92400e;
+  --th-success-bg: #f0fdf4;
+  --th-success-text: #166534;
+  --th-error-bg: #fef2f2;
+  --th-error-text: #991b1b;
 }
 
 @theme inline {
@@ -38,8 +45,13 @@
   --color-th-code-text: var(--th-code-text);
   --color-th-term-bg: var(--th-term-bg);
   --color-th-term-text: var(--th-term-text);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-mono);
+  --color-th-warning-bg: var(--th-warning-bg);
+  --color-th-warning-border: var(--th-warning-border);
+  --color-th-warning-text: var(--th-warning-text);
+  --color-th-success-bg: var(--th-success-bg);
+  --color-th-success-text: var(--th-success-text);
+  --color-th-error-bg: var(--th-error-bg);
+  --color-th-error-text: var(--th-error-text);
 }
 
 * {
@@ -104,7 +116,7 @@ body {
 .prose-chat strong { color: var(--th-text); font-weight: 600; }
 .prose-chat a { color: var(--th-accent); text-decoration: underline; text-underline-offset: 2px; }
 .prose-chat a:hover { color: var(--th-accent-hover); }
-.prose-chat a[href^="http"]::after {
+.prose-chat a[href^="http"]:not(.no-external-icon)::after {
   content: "";
   display: inline-block;
   width: 0.65em;

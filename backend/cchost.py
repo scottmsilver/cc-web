@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -71,6 +72,7 @@ class CCSession:
     _host: Optional["CCHost"] = field(default=None, repr=False)
     _jsonl_path: Optional[str] = field(default=None, repr=False)
     _last_line_count: int = field(default=0, repr=False)
+    _tmux_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def _project_slug(self) -> str:
@@ -366,7 +368,11 @@ class CCSession:
         def _question_matches_screen(q: dict) -> bool:
             """Check if a structured question matches what's on tmux."""
             q_text = q.get("question", "")
-            return bool(q_text) and q_text[:50] in screen
+            if not q_text:
+                return False
+            normalized_q = " ".join(q_text[:80].split())
+            normalized_screen = " ".join(screen.split())
+            return normalized_q[:50] in normalized_screen
 
         # 1. Hook events (best)
         q = self._unanswered_question_from_events()
@@ -420,28 +426,29 @@ class CCSession:
 
     def _send_message_to_tmux(self, message: str) -> None:
         """Send a message to Claude Code via tmux, handling long messages safely."""
-        pane = self._tmux_session.active_window.active_pane
+        with self._tmux_lock:
+            pane = self._tmux_session.active_window.active_pane
 
-        # For short messages, send_keys works fine
-        if len(message) < 500:
-            pane.send_keys(message, enter=True)
-            return
+            # For short messages, send_keys works fine
+            if len(message) < 500:
+                pane.send_keys(message, enter=True)
+                return
 
-        # For long messages, use tmux load-buffer to avoid paste corruption
+            # For long messages, use tmux load-buffer to avoid paste corruption
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            f.write(message)
-            tmp_path = f.name
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+                f.write(message)
+                tmp_path = f.name
 
-        try:
-            server = self._tmux_session.server
-            buf_name = f"cchost-{self.id}"
-            server.cmd("load-buffer", "-b", buf_name, tmp_path)
-            pane.cmd("paste-buffer", "-b", buf_name, "-d")
-            time.sleep(0.3)
-            pane.send_keys("", enter=True)
-        finally:
-            os.unlink(tmp_path)
+            try:
+                server = self._tmux_session.server
+                buf_name = f"cchost-{self.id}"
+                server.cmd("load-buffer", "-b", buf_name, tmp_path)
+                pane.cmd("paste-buffer", "-b", buf_name, "-d")
+                time.sleep(0.3)
+                pane.send_keys("", enter=True)
+            finally:
+                os.unlink(tmp_path)
 
     def send(self, message: str, timeout: int = 600) -> Response:
         """Send a message and wait for Claude's response."""
@@ -494,38 +501,40 @@ class CCSession:
         """Toggle a checkbox in a multi-select question (space key)."""
         if self._tmux_session is None:
             raise RuntimeError(f"Session {self.id} is destroyed")
-        pane = self._tmux_session.active_window.active_pane
-        self._navigate_to_option(option_index)
-        time.sleep(0.1)
-        pane.send_keys("Space", enter=False)
-        time.sleep(0.2)
+        with self._tmux_lock:
+            pane = self._tmux_session.active_window.active_pane
+            self._navigate_to_option(option_index)
+            time.sleep(0.1)
+            pane.send_keys("Space", enter=False)
+            time.sleep(0.2)
 
     def submit_multiselect(self, timeout: int = 600) -> Response:
         """Submit a multi-select question by pressing Tab to reach Submit, then Enter."""
         if self._tmux_session is None:
             raise RuntimeError(f"Session {self.id} is destroyed")
-        pane = self._tmux_session.active_window.active_pane
+        with self._tmux_lock:
+            pane = self._tmux_session.active_window.active_pane
 
-        # In Claude Code's multi-select, Tab cycles through the tab bar
-        # (Markup Rate, Billing Dates, SM Tech, Watchlist, Submit)
-        # Press Tab until we land on Submit, then Enter
-        # The tab bar shows ✔ Submit when it's focused
-        for _ in range(10):
-            pane.send_keys("Tab", enter=False)
-            time.sleep(0.3)
-            try:
-                captured = pane.capture_pane(start=-5)
-                screen = "\n".join(captured)
-                # Check if Submit is now the active tab (indicated by ✔ before Submit)
-                # or if the question UI has disappeared (submit happened)
-                if "Enter to select" not in screen:
+            # In Claude Code's multi-select, Tab cycles through the tab bar
+            # (Markup Rate, Billing Dates, SM Tech, Watchlist, Submit)
+            # Press Tab until we land on Submit, then Enter
+            # The tab bar shows ✔ Submit when it's focused
+            for _ in range(10):
+                pane.send_keys("Tab", enter=False)
+                time.sleep(0.3)
+                try:
+                    captured = pane.capture_pane(start=-5)
+                    screen = "\n".join(captured)
+                    # Check if Submit is now the active tab (indicated by ✔ before Submit)
+                    # or if the question UI has disappeared (submit happened)
+                    if "Enter to select" not in screen:
+                        break
+                except Exception:
                     break
-            except Exception:
-                break
 
-        # Press Enter to confirm
-        pane.send_keys("", enter=True)
-        time.sleep(0.5)
+            # Press Enter to confirm
+            pane.send_keys("", enter=True)
+            time.sleep(0.5)
         return self._wait_for_response(timeout)
 
     def answer(self, option_index: int = 1, timeout: int = 600) -> Response:
@@ -537,13 +546,14 @@ class CCSession:
         if self._tmux_session is None:
             raise RuntimeError(f"Session {self.id} is destroyed")
 
-        pane = self._tmux_session.active_window.active_pane
-        self._navigate_to_option(option_index)
-        time.sleep(0.1)
+        with self._tmux_lock:
+            pane = self._tmux_session.active_window.active_pane
+            self._navigate_to_option(option_index)
+            time.sleep(0.1)
 
-        # Press Enter to select
-        pane.send_keys("", enter=True)
-        time.sleep(0.5)
+            # Press Enter to select
+            pane.send_keys("", enter=True)
+            time.sleep(0.5)
 
         # Now wait for the next response using the same logic as send()
         return self._wait_for_response(timeout)
@@ -552,8 +562,8 @@ class CCSession:
         """Reset JSONL and events cursors for a new response wait. Returns (events_path, events_offset)."""
         self._jsonl_path = self._find_jsonl()
         if self._jsonl_path:
-            with open(self._jsonl_path, "r") as f:
-                self._last_line_count = len(f.readlines())
+            with open(self._jsonl_path, "rb") as f:
+                self._last_line_count = sum(1 for _ in f)
         else:
             self._last_line_count = 0
 
@@ -698,78 +708,103 @@ class CCSession:
         """
         if self._tmux_session is None:
             raise RuntimeError(f"Session {self.id} is destroyed")
-        if not self._is_tmux_idle():
-            raise RuntimeError("Session is busy")
+        if not self._tmux_lock.acquire(timeout=2):
+            raise RuntimeError("Session is busy (locked)")
+        try:
+            if not self._is_tmux_idle():
+                raise RuntimeError("Session is busy")
 
-        pane = self._tmux_session.active_window.active_pane
-        pane.send_keys(f"/btw {question}", enter=True)
+            pane = self._tmux_session.active_window.active_pane
+            pane.send_keys(f"/btw {question}", enter=True)
 
-        # Wait for the response overlay (ends with "to dismiss")
-        start = time.time()
-        response_lines: list[str] = []
-        q_prefix = question[:30]
-        while time.time() - start < timeout:
-            time.sleep(1.0)
-            content = pane.cmd("capture-pane", "-p").stdout
-            full_text = "\n".join(content) if isinstance(content, list) else str(content)
-            if "to dismiss" in full_text.lower():
-                lines = full_text.split("\n")
-                # The overlay echoes "/btw <question>" then shows the answer.
-                # Find the LAST occurrence of the question echo, capture after it.
-                last_q_idx = -1
-                for i, line in enumerate(lines):
-                    if q_prefix in line and "/btw" in line:
-                        last_q_idx = i
-                # Capture from after the last question echo to "to dismiss"
-                if last_q_idx >= 0:
-                    for line in lines[last_q_idx + 1 :]:
-                        stripped = line.strip()
-                        if "to dismiss" in stripped.lower():
-                            break
-                        if stripped:
-                            response_lines.append(stripped)
-                break
+            # Wait for the response overlay (ends with "to dismiss")
+            start = time.time()
+            response_lines: list[str] = []
+            q_prefix = question[:30]
+            while time.time() - start < timeout:
+                time.sleep(1.0)
+                content = pane.cmd("capture-pane", "-p").stdout
+                full_text = "\n".join(content) if isinstance(content, list) else str(content)
+                if "to dismiss" in full_text.lower():
+                    lines = full_text.split("\n")
+                    # The overlay echoes "/btw <question>" then shows the answer.
+                    # Find the LAST occurrence of the question echo, capture after it.
+                    last_q_idx = -1
+                    for i, line in enumerate(lines):
+                        if q_prefix in line and "/btw" in line:
+                            last_q_idx = i
+                    # Capture from after the last question echo to "to dismiss"
+                    if last_q_idx >= 0:
+                        for line in lines[last_q_idx + 1 :]:
+                            stripped = line.strip()
+                            if "to dismiss" in stripped.lower():
+                                break
+                            if stripped:
+                                response_lines.append(stripped)
+                    break
 
-        # Dismiss the overlay
-        pane.send_keys("Escape", enter=False)
-        time.sleep(0.3)
+            # Dismiss the overlay
+            pane.send_keys("Escape", enter=False)
+            time.sleep(0.3)
 
-        return "\n".join(response_lines)
+            return "\n".join(response_lines)
+        finally:
+            self._tmux_lock.release()
 
     def summary(self) -> dict:
-        """Return a title and status for this session.
+        """Fast, non-blocking. Reads cache or falls back to raw JSONL."""
+        cache_path = os.path.join(self.working_dir, ".cchost-summary.json")
 
-        Uses /btw to ask the session itself for a summary (full conversation context).
-        Falls back to raw JSONL extraction if /btw fails or session is busy.
-        Results are cached in .cchost-summary.json.
-        """
+        # Read cache
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r") as f:
+                    cached = json.load(f)
+                return {"title": cached.get("title", ""), "status": cached.get("status", "")}
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Fallback: raw JSONL (fast)
+        title = ""
+        status = ""
+        records = self._read_all_transcript_entries()
+        for record in records:
+            rtype = record.get("type", "")
+            if rtype == "user" and not title:
+                text = self._extract_text(record).strip()
+                if text and len(text) < 2000:
+                    title = text[:80]
+            elif rtype == "assistant":
+                text = self._extract_text(record).strip()
+                if text:
+                    status = text[:120]
+        return {"title": title, "status": status}
+
+    def generate_summary(self) -> dict:
+        """Slow. Calls /btw to generate a smart title. Call from background thread only."""
         cache_path = os.path.join(self.working_dir, ".cchost-summary.json")
         jsonl_path = self._ensure_jsonl_path()
+        jsonl_size = os.path.getsize(jsonl_path) if jsonl_path and os.path.exists(jsonl_path) else 0
 
-        jsonl_size = 0
-        if jsonl_path and os.path.exists(jsonl_path):
-            jsonl_size = os.path.getsize(jsonl_path)
-
+        # Check if cache is fresh enough
         if os.path.exists(cache_path):
             try:
                 with open(cache_path, "r") as f:
                     cached = json.load(f)
                 cached_size = cached.get("_jsonl_size", 0)
-                if jsonl_size - cached_size < max(cached_size * 0.1, 50_000):
+                # If has a btw-generated title and JSONL hasn't grown much, skip
+                if cached.get("_generated") and jsonl_size - cached_size < max(cached_size * 0.1, 50_000):
                     return {"title": cached.get("title", ""), "status": cached.get("status", "")}
             except (json.JSONDecodeError, OSError):
                 pass
 
         title = ""
         status = ""
-
-        # Try /btw — the session has full context
         try:
             if self._is_tmux_idle():
                 response = self.btw(
                     'Respond ONLY with JSON, no markdown: {"title": "<3-6 word session title>", "status": "<current activity under 10 words>"}'
                 )
-                # Find JSON object in response (may span wrapped lines)
                 flat = " ".join(response.split())
                 match = re.search(r'\{[^{}]*"title"[^{}]*\}', flat)
                 if match:
@@ -777,27 +812,14 @@ class CCSession:
                     title = parsed.get("title", "")[:80]
                     status = parsed.get("status", "")[:120]
         except Exception as e:
-            logger.debug("btw summary failed: %s", e)
+            logger.debug("btw summary generation failed: %s", e)
 
-        # Fallback: raw JSONL
-        if not title:
-            records = self._read_all_transcript_entries()
-            for record in records:
-                rtype = record.get("type", "")
-                if rtype == "user" and not title:
-                    text = self._extract_text(record).strip()
-                    if text and len(text) < 2000:
-                        title = text[:80]
-                elif rtype == "assistant":
-                    text = self._extract_text(record).strip()
-                    if text:
-                        status = text[:120]
-
-        try:
-            with open(cache_path, "w") as f:
-                json.dump({"title": title, "status": status, "_jsonl_size": jsonl_size}, f)
-        except OSError:
-            pass
+        if title:
+            try:
+                with open(cache_path, "w") as f:
+                    json.dump({"title": title, "status": status, "_jsonl_size": jsonl_size, "_generated": True}, f)
+            except OSError:
+                pass
 
         return {"title": title, "status": status}
 

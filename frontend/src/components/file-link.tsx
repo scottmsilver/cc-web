@@ -14,7 +14,8 @@ import { CCHOST_API } from "@/lib/config";
 const FILE_PATH_RE = /(?:^|\s|`)((?:[\w.-]+\/)*[\w.-]+\.(?:json|md|txt|pdf|xlsx|xls|csv|py|sh|yaml|yml|html|css|js|ts|png|jpg|gif|log))(?:\s|$|`|,|\.|;|\))/gi;
 
 export function makeFileUrl(sessionId: string, filePath: string): string {
-  return `${CCHOST_API}/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(filePath)}`;
+  const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+  return `${CCHOST_API}/api/sessions/${encodeURIComponent(sessionId)}/files/${encodedPath}`;
 }
 
 export function FileLink({

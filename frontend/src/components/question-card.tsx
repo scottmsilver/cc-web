@@ -18,22 +18,22 @@ export function QuestionCard({ run, onAnswer, className }: QuestionCardProps) {
 
   return (
     <section className={className}>
-      <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+      <div className="rounded-xl border border-th-warning-border bg-th-warning-bg p-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-widest text-amber-700">Question</p>
+            <p className="text-[11px] font-semibold uppercase tracking-widest text-th-warning-text">Question</p>
             <h3 className="mt-1 text-lg font-semibold text-th-text">
               {question?.question || "Waiting for a response"}
             </h3>
           </div>
-          <span className="rounded-full border border-amber-400 bg-amber-100 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wider text-amber-700">
+          <span className="rounded-full border border-th-warning-border bg-th-warning-bg px-2.5 py-1 text-[11px] font-medium uppercase tracking-wider text-th-warning-text">
             {getProgressRunStatusText(run)}
           </span>
         </div>
 
         <div className="mt-4 space-y-2">
           {options.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-amber-300 bg-amber-100/50 px-4 py-3 text-sm text-amber-800">
+            <p className="rounded-lg border border-dashed border-th-warning-border bg-th-warning-bg px-4 py-3 text-sm text-th-warning-text">
               The model is waiting for input, but no answer options were provided.
             </p>
           ) : !onAnswer ? (

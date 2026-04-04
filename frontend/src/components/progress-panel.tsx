@@ -63,11 +63,11 @@ function StatusBlock({
           className={[
             "rounded-full px-3 py-1 text-xs font-medium",
             pillTone === "error"
-              ? "border border-red-300 bg-red-50 text-red-700"
+              ? "border border-th-error-text/30 bg-th-error-bg text-th-error-text"
               : pillTone === "warning"
-                ? "border border-amber-300 bg-amber-50 text-amber-700"
+                ? "border border-th-warning-border bg-th-warning-bg text-th-warning-text"
                 : pillTone === "success"
-                  ? "border border-green-300 bg-green-50 text-green-700"
+                  ? "border border-th-success-text/30 bg-th-success-bg text-th-success-text"
                   : "border border-th-border bg-th-surface text-th-text",
           ].join(" ")}
         >
@@ -95,7 +95,7 @@ function StatusBlock({
       {run?.waiting_for_input ? <QuestionCard className="mt-5" run={run} onAnswer={onAnswer} /> : null}
 
       {snapshot.is_question && !run?.current_question && !run?.result?.questions?.length ? (
-        <div className="mt-5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <div className="mt-5 rounded-lg border border-th-warning-border bg-th-warning-bg px-4 py-3 text-sm text-th-warning-text">
           Waiting for input, but no question payload is attached.
         </div>
       ) : null}

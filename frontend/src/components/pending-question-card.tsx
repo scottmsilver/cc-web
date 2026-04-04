@@ -96,8 +96,8 @@ export function PendingQuestionCard({
 
   return (
     <div className="flex justify-start">
-      <div className="max-w-[80%] rounded-xl border border-amber-300 bg-amber-50 p-4">
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-amber-700 mb-2">
+      <div className="max-w-[80%] rounded-xl border border-th-warning-border bg-th-warning-bg p-4">
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-th-warning-text mb-2">
           {multi ? "Select all that apply" : "Choose one"}
         </p>
         <p className="text-sm text-th-text mb-3">{question.question}</p>

@@ -17,6 +17,13 @@ export type Theme = {
   codeText: string;
   termBg: string;
   termText: string;
+  warningBg: string;
+  warningBorder: string;
+  warningText: string;
+  successBg: string;
+  successText: string;
+  errorBg: string;
+  errorText: string;
 };
 
 export const themes: Theme[] = [
@@ -39,6 +46,13 @@ export const themes: Theme[] = [
     codeText: "#c2410c",
     termBg: "#111827",
     termText: "#4ade80",
+    warningBg: "#fffbeb",
+    warningBorder: "#fcd34d",
+    warningText: "#92400e",
+    successBg: "#f0fdf4",
+    successText: "#166534",
+    errorBg: "#fef2f2",
+    errorText: "#991b1b",
   },
   {
     name: "Dark",
@@ -59,6 +73,13 @@ export const themes: Theme[] = [
     codeText: "#d77757",
     termBg: "#0d0d0d",
     termText: "#4ade80",
+    warningBg: "#422006",
+    warningBorder: "#854d0e",
+    warningText: "#fbbf24",
+    successBg: "#052e16",
+    successText: "#4ade80",
+    errorBg: "#450a0a",
+    errorText: "#f87171",
   },
   {
     name: "Warm",
@@ -79,6 +100,13 @@ export const themes: Theme[] = [
     codeText: "#b45030",
     termBg: "#1c1816",
     termText: "#a3e635",
+    warningBg: "#fffbeb",
+    warningBorder: "#f59e0b",
+    warningText: "#92400e",
+    successBg: "#f0fdf4",
+    successText: "#166534",
+    errorBg: "#fef2f2",
+    errorText: "#991b1b",
   },
   {
     name: "Nord",
@@ -99,6 +127,13 @@ export const themes: Theme[] = [
     codeText: "#a3be8c",
     termBg: "#242933",
     termText: "#a3be8c",
+    warningBg: "#3b3520",
+    warningBorder: "#ebcb8b",
+    warningText: "#ebcb8b",
+    successBg: "#2e3b2e",
+    successText: "#a3be8c",
+    errorBg: "#3b2e2e",
+    errorText: "#bf616a",
   },
 ];
 
@@ -124,6 +159,13 @@ export function applyTheme(theme: Theme) {
   root.style.setProperty("--th-code-text", theme.codeText);
   root.style.setProperty("--th-term-bg", theme.termBg);
   root.style.setProperty("--th-term-text", theme.termText);
+  root.style.setProperty("--th-warning-bg", theme.warningBg);
+  root.style.setProperty("--th-warning-border", theme.warningBorder);
+  root.style.setProperty("--th-warning-text", theme.warningText);
+  root.style.setProperty("--th-success-bg", theme.successBg);
+  root.style.setProperty("--th-success-text", theme.successText);
+  root.style.setProperty("--th-error-bg", theme.errorBg);
+  root.style.setProperty("--th-error-text", theme.errorText);
 
   // Save preference
   try { localStorage.setItem("cchost-theme", theme.id); } catch {}
