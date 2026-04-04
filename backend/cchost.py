@@ -160,12 +160,44 @@ class CCSession:
         entries, _ = self._parse_jsonl_file(path)
         return entries
 
+    def _chat_sidecar_path(self) -> str:
+        """Path to the sidecar chat file for non-JSONL entries (command results, etc.)."""
+        return os.path.join(self.working_dir, ".cchost-chat.jsonl")
+
+    def save_chat_entry(self, entry: dict) -> None:
+        """Append an entry to the sidecar chat file."""
+        import datetime as _dt
+
+        entry.setdefault("_ts", _dt.datetime.now(_dt.timezone.utc).isoformat())
+        try:
+            with open(self._chat_sidecar_path(), "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except OSError:
+            pass
+
     def raw_transcript(self) -> dict:
-        """Public API: return the raw JSONL transcript entries, path, and count."""
+        """Public API: return the raw JSONL transcript entries merged with sidecar chat entries."""
         path = self._ensure_jsonl_path()
         if not path:
-            return {"entries": [], "path": None, "count": 0}
-        entries, _ = self._parse_jsonl_file(path)
+            entries = []
+        else:
+            entries, _ = self._parse_jsonl_file(path)
+
+        # Merge sidecar entries (command results, etc.)
+        sidecar = self._chat_sidecar_path()
+        if os.path.exists(sidecar):
+            try:
+                with open(sidecar, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                entries.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                pass
+            except OSError:
+                pass
+
         return {"entries": entries, "path": path, "count": len(entries)}
 
     def _extract_text(self, msg_data: dict) -> str:
@@ -815,7 +847,16 @@ class CCSession:
                     # Dismiss the overlay
                     pane.send_keys("Escape", enter=False)
                     time.sleep(0.3)
-                    return {"type": "overlay", "content": "\n".join(response_lines)}
+                    result_text = "\n".join(response_lines)
+                    # Persist to sidecar so it shows in chat on refresh
+                    self.save_chat_entry(
+                        {
+                            "type": "command",
+                            "command": command,
+                            "content": result_text,
+                        }
+                    )
+                    return {"type": "overlay", "content": result_text}
 
                 # Check if Claude started working (no longer idle, JSONL activity)
                 if not self._is_tmux_idle() and not _has_overlay_footer(full_text):

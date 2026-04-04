@@ -451,7 +451,7 @@ export default function Chat() {
         const sessionId = await ensureSession();
         const result = await apiRunSlashCommand(sessionId, message);
         if (result.type === "overlay") {
-          setCommandResult(result.content);
+          // Result persisted to sidecar — will appear in chat on next JSONL poll
         } else if (result.type === "response") {
           // It produced a normal response — will appear in JSONL polling
           // Trigger a progress refresh

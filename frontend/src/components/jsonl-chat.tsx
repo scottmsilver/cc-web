@@ -242,6 +242,24 @@ function AssistantEntry({ entry, files, sessionId, onViewFile }: { entry: JsonlE
 }
 
 /* ── User entry ── */
+/* ── Command result (from slash commands) ── */
+function CommandEntry({ entry }: { entry: JsonlEntry }) {
+  const command = (entry as Record<string, unknown>).command as string || "";
+  const content = (entry as Record<string, unknown>).content as string || "";
+  if (!content) return null;
+  return (
+    <div className="py-2">
+      <div className="rounded-lg border border-th-border bg-th-surface overflow-hidden">
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-th-border bg-th-surface-hover">
+          <span className="text-xs font-mono font-semibold text-th-accent">{command}</span>
+          <span className="text-xs text-th-text-faint">command output</span>
+        </div>
+        <pre className="px-3 py-2 text-xs font-mono text-th-text whitespace-pre-wrap overflow-x-auto leading-relaxed">{content}</pre>
+      </div>
+    </div>
+  );
+}
+
 function UserEntry({ entry, onViewImages }: { entry: JsonlEntry; onViewImages?: (images: string[], startIndex: number) => void }) {
   const rawContent = entry.message?.content;
   // Handle content as plain string (Claude Code sometimes writes it this way)
@@ -342,7 +360,7 @@ export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingM
     prevCountRef.current = entries.length;
   }, [entries]);
 
-  const conv = entries.filter(e => e.type === "user" || e.type === "assistant");
+  const conv = entries.filter(e => e.type === "user" || e.type === "assistant" || e.type === "command");
   if (conv.length === 0) {
     return <div className="flex h-full items-center justify-center"><p className="text-th-text-faint">Send a message or drop a file to start</p></div>;
   }
@@ -352,6 +370,7 @@ export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingM
       {conv.map((entry, i) => {
         if (entry.type === "assistant") return <AssistantEntry key={i} entry={entry} files={files} sessionId={sessionId!} onViewFile={onViewFile} />;
         if (entry.type === "user") return <UserEntry key={i} entry={entry} onViewImages={onViewImages} />;
+        if (entry.type === "command") return <CommandEntry key={i} entry={entry} />;
         return null;
       })}
 
