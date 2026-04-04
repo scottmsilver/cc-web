@@ -179,10 +179,16 @@ export function ChatInput({
     !slashFilter || c.command.toLowerCase().includes(slashFilter)
   );
 
-  const insertSlashCommand = (command: string) => {
+  const insertSlashCommand = (command: string, submit = true) => {
     setInput(command);
     setShowSlashMenu(false);
-    textInputRef.current?.focus();
+    if (submit) {
+      // Submit immediately — slash commands are complete as-is
+      onSend(command);
+      setInput("");
+    } else {
+      textInputRef.current?.focus();
+    }
   };
 
   const insertAtReference = (filename: string) => {
