@@ -104,6 +104,20 @@ body {
 .prose-chat strong { color: var(--th-text); font-weight: 600; }
 .prose-chat a { color: var(--th-accent); text-decoration: underline; text-underline-offset: 2px; }
 .prose-chat a:hover { color: var(--th-accent-hover); }
+.prose-chat a[href^="http"]::after {
+  content: "";
+  display: inline-block;
+  width: 0.65em;
+  height: 0.65em;
+  margin-left: 0.2em;
+  vertical-align: baseline;
+  background: currentColor;
+  mask-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 12 12' fill='none' stroke='white' stroke-width='1.5' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3.5 3h5.5v5.5M8.5 3.5L3 9'/%3E%3C/svg%3E");
+  mask-size: contain;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 12 12' fill='none' stroke='white' stroke-width='1.5' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3.5 3h5.5v5.5M8.5 3.5L3 9'/%3E%3C/svg%3E");
+  -webkit-mask-size: contain;
+  opacity: 0.5;
+}
 .prose-chat ul, .prose-chat ol { padding-left: 1.25em; margin: 0.5em 0; }
 .prose-chat li { margin: 0.25em 0; }
 .prose-chat h1, .prose-chat h2, .prose-chat h3 {

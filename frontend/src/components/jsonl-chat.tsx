@@ -79,8 +79,9 @@ function WebLinks({ text }: { text: string }) {
       <div className="mt-0.5 space-y-0.5">
         {links.slice(0, 5).map((link, i) => (
           <div key={i} className="text-[11px]">
-            <a href={link.url} target="_blank" rel="noopener noreferrer" className="text-th-accent hover:text-th-accent-hover underline underline-offset-2 cursor-pointer">
+            <a href={link.url} target="_blank" rel="noopener noreferrer" className="text-th-accent hover:text-th-accent-hover underline underline-offset-2 cursor-pointer inline-flex items-center gap-1">
               {link.title}
+              <svg className="inline-block w-3 h-3 flex-shrink-0 opacity-50" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3.5 3h5.5v5.5M8.5 3.5L3 9" /></svg>
             </a>
           </div>
         ))}
@@ -189,7 +190,13 @@ function AssistantEntry({ entry, files, sessionId, onViewFile }: { entry: JsonlE
     const text = rawContent as string;
     return (
       <div className="py-2 text-[15px] prose-chat leading-relaxed text-th-text">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+          a: (props) => {
+            const href = props.href || "";
+            const isExternal = href.startsWith("http");
+            return <a href={href} {...(isExternal ? { target: "_blank", rel: "noopener noreferrer" } : {})}>{props.children}</a>;
+          },
+        }}>{text}</ReactMarkdown>
       </div>
     );
   }
@@ -201,6 +208,11 @@ function AssistantEntry({ entry, files, sessionId, onViewFile }: { entry: JsonlE
           return (
             <div key={j} className="py-2 text-[15px] prose-chat leading-relaxed text-th-text">
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                a: (props) => {
+                  const href = props.href || "";
+                  const isExternal = href.startsWith("http");
+                  return <a href={href} {...(isExternal ? { target: "_blank", rel: "noopener noreferrer" } : {})}>{props.children}</a>;
+                },
                 code: (props) => {
                   const t = String(props.children).trim();
                   // File reference — all local files open in artifacts
