@@ -195,6 +195,10 @@ class CCSession:
                     # Drain any existing JSONL lines from startup
                     self._jsonl_path = self._find_jsonl()
                     self._read_new_lines()
+                    # Ensure events file exists at session root so hooks find it
+                    events_path = os.path.join(self.working_dir, ".cchost-events.jsonl")
+                    if not os.path.exists(events_path):
+                        open(events_path, "a").close()
                     return
             except Exception:
                 logger.debug("Exception during _wait_for_ready poll", exc_info=True)
