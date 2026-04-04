@@ -2,7 +2,7 @@
 
 import { useRef, useState, useEffect, type FormEvent, type DragEvent } from "react";
 
-import { uploadFile as apiUploadFile } from "@/lib/api";
+import { uploadFile as apiUploadFile, fetchCommands, type SlashCommand } from "@/lib/api";
 
 type UploadedFile = {
   originalName: string;
@@ -31,6 +31,11 @@ export function ChatInput({
   const [showAtMenu, setShowAtMenu] = useState(false);
   const [atFilter, setAtFilter] = useState("");
   const [atCursorPos, setAtCursorPos] = useState(0);
+  const [showSlashMenu, setShowSlashMenu] = useState(false);
+  const [slashFilter, setSlashFilter] = useState("");
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
+  const [slashHighlight, setSlashHighlight] = useState(0);
+  const slashCommandsCacheRef = useRef<SlashCommand[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
 
@@ -128,7 +133,7 @@ export function ChatInput({
     }
   };
 
-  // @ autocomplete logic
+  // @ and / autocomplete logic
   const handleInputChange = (value: string) => {
     setInput(value);
     const cursorPos = textInputRef.current?.selectionStart ?? value.length;
@@ -139,14 +144,46 @@ export function ChatInput({
       setShowAtMenu(true);
       setAtFilter(atMatch[1].toLowerCase());
       setAtCursorPos(cursorPos);
+      setShowSlashMenu(false);
     } else {
       setShowAtMenu(false);
+    }
+
+    // Check for / at start of input
+    const slashMatch = value.match(/^\/(\S*)$/);
+    if (slashMatch) {
+      const filter = slashMatch[1].toLowerCase();
+      setSlashFilter(filter);
+      setSlashHighlight(0);
+      // Lazy-load commands
+      if (slashCommandsCacheRef.current) {
+        setSlashCommands(slashCommandsCacheRef.current);
+        setShowSlashMenu(true);
+      } else {
+        void fetchCommands().then((cmds) => {
+          slashCommandsCacheRef.current = cmds;
+          setSlashCommands(cmds);
+          setShowSlashMenu(true);
+        });
+      }
+    } else {
+      setShowSlashMenu(false);
     }
   };
 
   const filteredFiles = (sessionFiles || []).filter((f) =>
     !atFilter || f.toLowerCase().includes(atFilter)
   );
+
+  const filteredSlashCommands = slashCommands.filter((c) =>
+    !slashFilter || c.command.toLowerCase().includes(slashFilter)
+  );
+
+  const insertSlashCommand = (command: string) => {
+    setInput(command);
+    setShowSlashMenu(false);
+    textInputRef.current?.focus();
+  };
 
   const insertAtReference = (filename: string) => {
     const beforeCursor = input.slice(0, atCursorPos);
@@ -161,12 +198,13 @@ export function ChatInput({
     textInputRef.current?.focus();
   };
 
-  // Close @ menu on blur (with delay for click)
+  // Close @ and / menus on blur (with delay for click)
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
-      if (!target.closest("[data-at-menu]") && !target.closest("input[type=text]")) {
+      if (!target.closest("[data-at-menu]") && !target.closest("[data-slash-menu]") && !target.closest("input[type=text]")) {
         setShowAtMenu(false);
+        setShowSlashMenu(false);
       }
     };
     document.addEventListener("mousedown", handleClick);
@@ -254,7 +292,28 @@ export function ChatInput({
                   return;
                 }
               }
-              if (e.key === "Enter" && !e.shiftKey && !showAtMenu) {
+              if (showSlashMenu && filteredSlashCommands.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSlashHighlight((prev) => Math.min(prev + 1, filteredSlashCommands.length - 1));
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSlashHighlight((prev) => Math.max(prev - 1, 0));
+                  return;
+                }
+                if (e.key === "Tab" || e.key === "Enter") {
+                  e.preventDefault();
+                  insertSlashCommand(filteredSlashCommands[slashHighlight].command);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  setShowSlashMenu(false);
+                  return;
+                }
+              }
+              if (e.key === "Enter" && !e.shiftKey && !showAtMenu && !showSlashMenu) {
                 e.preventDefault();
                 const form = e.currentTarget.closest("form");
                 form?.requestSubmit();
@@ -295,6 +354,33 @@ export function ChatInput({
                   className="w-full px-3 py-2 text-left text-sm text-th-text hover:bg-th-surface hover:text-th-accent font-mono truncate"
                 >
                   {file}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* / slash command autocomplete dropdown */}
+          {showSlashMenu && filteredSlashCommands.length > 0 && (
+            <div
+              data-slash-menu
+              className="absolute bottom-full left-0 mb-1 w-80 max-h-48 overflow-y-auto rounded-lg border border-th-border bg-th-bg shadow-lg z-50"
+            >
+              <div className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-th-text-muted border-b border-th-border">
+                Commands
+              </div>
+              {filteredSlashCommands.map((cmd, idx) => (
+                <button
+                  key={cmd.command}
+                  type="button"
+                  onClick={() => insertSlashCommand(cmd.command)}
+                  className={`w-full px-3 py-2 text-left text-sm flex items-baseline gap-2 ${
+                    idx === slashHighlight
+                      ? "bg-th-surface text-th-accent"
+                      : "text-th-text hover:bg-th-surface hover:text-th-accent"
+                  }`}
+                >
+                  <span className="font-mono font-medium">{cmd.command}</span>
+                  <span className="text-th-text-muted text-xs truncate">{cmd.description}</span>
                 </button>
               ))}
             </div>

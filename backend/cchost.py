@@ -61,6 +61,18 @@ class Response:
     questions: list[dict] = field(default_factory=list)  # [{question, options: [QuestionOption]}]
 
 
+def _has_overlay_footer(text: str) -> bool:
+    """Check if tmux pane content shows an overlay footer (dismiss/cancel)."""
+    lower = text.lower()
+    return "to dismiss" in lower or "esc to cancel" in lower
+
+
+def _is_overlay_footer_line(line: str) -> bool:
+    """Check if a single line is an overlay footer."""
+    lower = line.strip().lower()
+    return "to dismiss" in lower or "esc to cancel" in lower
+
+
 @dataclass
 class CCSession:
     """A persistent Claude Code session running in tmux."""
@@ -733,7 +745,7 @@ class CCSession:
                 time.sleep(1.0)
                 content = pane.cmd("capture-pane", "-p").stdout
                 full_text = "\n".join(content) if isinstance(content, list) else str(content)
-                if "to dismiss" in full_text.lower():
+                if _has_overlay_footer(full_text):
                     lines = full_text.split("\n")
                     # The overlay echoes "/btw <question>" then shows the answer.
                     # Find the LAST occurrence of the question echo, capture after it.
@@ -745,7 +757,7 @@ class CCSession:
                     if last_q_idx >= 0:
                         for line in lines[last_q_idx + 1 :]:
                             stripped = line.strip()
-                            if "to dismiss" in stripped.lower():
+                            if _is_overlay_footer_line(stripped):
                                 break
                             if stripped:
                                 response_lines.append(stripped)
@@ -758,6 +770,68 @@ class CCSession:
             return "\n".join(response_lines)
         finally:
             self._tmux_lock.release()
+
+    def slash_command(self, command: str, timeout: int = 30) -> dict:
+        """Execute a slash command and capture the result.
+
+        Returns {"type": "overlay"|"response"|"instant", "content": str}
+        """
+        if self._tmux_session is None:
+            raise RuntimeError(f"Session {self.id} is destroyed")
+        if not self._tmux_lock.acquire(timeout=5):
+            raise RuntimeError("Session is busy (locked)")
+        try:
+            if not self._is_tmux_idle():
+                raise RuntimeError("Session is busy")
+
+            pane = self._tmux_session.active_window.active_pane
+            pane.send_keys(command, enter=True)
+
+            # Wait and detect what kind of response we get
+            start = time.time()
+            while time.time() - start < timeout:
+                time.sleep(1.0)
+                content = pane.cmd("capture-pane", "-p").stdout
+                full_text = "\n".join(content) if isinstance(content, list) else str(content)
+
+                # Check for overlay response (like /help, /status, /cost)
+                if _has_overlay_footer(full_text):
+                    lines = full_text.split("\n")
+                    response_lines = []
+                    # Capture all non-empty lines before the footer,
+                    # skipping leading separator lines (─────)
+                    started = False
+                    for line in lines:
+                        stripped = line.strip()
+                        if _is_overlay_footer_line(stripped):
+                            break
+                        if not started and (not stripped or all(c in "─━═" for c in stripped)):
+                            continue
+                        started = True
+                        response_lines.append(stripped)
+                    # Dismiss the overlay
+                    pane.send_keys("Escape", enter=False)
+                    time.sleep(0.3)
+                    return {"type": "overlay", "content": "\n".join(response_lines)}
+
+                # Check if Claude started working (no longer idle, JSONL activity)
+                if not self._is_tmux_idle() and not _has_overlay_footer(full_text):
+                    # It's a regular response — release lock and use _wait_for_response
+                    self._tmux_lock.release()
+                    try:
+                        response = self._wait_for_response(timeout)
+                        return {"type": "response", "content": response.text}
+                    except Exception as e:
+                        return {"type": "response", "content": str(e)}
+
+                # Check if it was instant (prompt came back quickly, nothing happened)
+                if time.time() - start > 3 and self._is_tmux_idle():
+                    return {"type": "instant", "content": ""}
+
+            return {"type": "instant", "content": ""}
+        finally:
+            if self._tmux_lock.locked():
+                self._tmux_lock.release()
 
     def summary(self) -> dict:
         """Fast, non-blocking. Reads cache or falls back to raw JSONL."""

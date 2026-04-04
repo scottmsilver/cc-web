@@ -192,6 +192,33 @@ export async function fetchJsonl(
   return res.json();
 }
 
+// ── Slash Commands ──
+
+export type SlashCommand = {
+  command: string;
+  description: string;
+};
+
+export async function fetchCommands(): Promise<SlashCommand[]> {
+  const res = await fetch(`${CCHOST_API}/api/commands`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.commands || [];
+}
+
+export async function runSlashCommand(
+  sessionId: string,
+  command: string,
+): Promise<{ type: string; content: string }> {
+  const res = await fetch(`${CCHOST_API}/api/sessions/${sessionId}/command`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ command }),
+  });
+  if (!res.ok) throw new Error(`Command failed: HTTP ${res.status}`);
+  return res.json();
+}
+
 // ── Terminal ──
 
 export async function fetchTerminalOutput(

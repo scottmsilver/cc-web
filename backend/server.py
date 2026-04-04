@@ -18,6 +18,7 @@ Gradio UI at /ui — conversational chat interface with file browser.
 import logging
 import os
 import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -677,6 +678,56 @@ async def upload_file(session_id: str, request: Request):
 def get_terminal(session_id: str, lines: int = 50):
     session = _get_session_or_404(session_id)
     return {"terminal": session.terminal_capture(lines)}
+
+
+SLASH_COMMANDS = [
+    {"command": "/add-dir", "description": "Add a new working directory"},
+    {"command": "/clear", "description": "Clear conversation history"},
+    {"command": "/compact", "description": "Compact conversation to reduce context"},
+    {"command": "/cost", "description": "Show token usage and costs"},
+    {"command": "/fast", "description": "Toggle fast mode"},
+    {"command": "/help", "description": "Show help and available commands"},
+    {"command": "/hooks", "description": "View hook configurations"},
+    {"command": "/init", "description": "Initialize a CLAUDE.md file"},
+    {"command": "/keybindings", "description": "Open keybindings configuration"},
+    {"command": "/mcp", "description": "Manage MCP servers"},
+    {"command": "/memory", "description": "Edit Claude memory files"},
+    {"command": "/model", "description": "Set the AI model"},
+    {"command": "/permissions", "description": "Manage tool permission rules"},
+    {"command": "/plan", "description": "Enable plan mode or view plan"},
+    {"command": "/rename", "description": "Rename the conversation"},
+    {"command": "/resume", "description": "Resume a previous conversation"},
+    {"command": "/review", "description": "Pre-landing PR review"},
+    {"command": "/rewind", "description": "Restore to a previous point"},
+    {"command": "/skills", "description": "List available skills"},
+    {"command": "/stats", "description": "Show usage statistics"},
+    {"command": "/status", "description": "Show status info"},
+    {"command": "/tasks", "description": "List background tasks"},
+    {"command": "/theme", "description": "Change the theme"},
+    {"command": "/vim", "description": "Toggle Vim editing mode"},
+    {"command": "/voice", "description": "Toggle voice mode"},
+]
+
+
+@app.get("/api/commands")
+def list_commands():
+    """Return the list of known slash commands for autocomplete."""
+    return {"commands": SLASH_COMMANDS}
+
+
+class SlashCommandRequest(BaseModel):
+    command: str
+
+
+@app.post("/api/sessions/{session_id}/command")
+def run_command(session_id: str, req: SlashCommandRequest):
+    """Execute a slash command and capture the result."""
+    session = _get_session_or_404(session_id)
+    try:
+        result = session.slash_command(req.command)
+        return result
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @app.get("/api/sessions/{session_id}/conversation")

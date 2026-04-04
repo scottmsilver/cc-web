@@ -27,6 +27,7 @@ import {
   fetchFiles as apiFetchFiles,
   fetchConversation as apiFetchConversation,
   uploadFiles as apiUploadFiles,
+  runSlashCommand as apiRunSlashCommand,
   getFileUrl,
 } from "@/lib/api";
 import type { ProgressResponse, RunResponse } from "@/lib/progress";
@@ -144,6 +145,7 @@ export default function Chat() {
   const [uploadDrag, setUploadDrag] = useState(false);
   const [progress, setProgress] = useState<ProgressResponse | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [commandResult, setCommandResult] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handledRunIdsRef = useRef<Set<string>>(new Set());
   const pollFailureCountRef = useRef(0);
@@ -442,6 +444,32 @@ export default function Chat() {
     const message = messageText.trim();
     if (!message || isLoading) return;
 
+    // Slash command handling
+    if (message.startsWith("/")) {
+      setIsLoading(true);
+      try {
+        const sessionId = await ensureSession();
+        const result = await apiRunSlashCommand(sessionId, message);
+        if (result.type === "overlay") {
+          setCommandResult(result.content);
+        } else if (result.type === "response") {
+          // It produced a normal response — will appear in JSONL polling
+          // Trigger a progress refresh
+          const nextProgress = await apiFetchProgress(sessionId);
+          setProgress(nextProgress);
+          if (nextProgress.run && ["pending", "running", "waiting_for_input"].includes(nextProgress.run.status)) {
+            setActiveRunId(nextProgress.run.run_id);
+          }
+        }
+        // "instant" type: nothing to show
+      } catch (error: unknown) {
+        setSendError(error instanceof Error ? error.message : "Command failed");
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     setPendingMessage(message);
     setIsLoading(true);
 
@@ -577,6 +605,15 @@ export default function Chat() {
       {uploadDrag && (
         <div className="fixed inset-0 z-50 flex items-center justify-center border-4 border-dashed border-th-accent bg-th-surface">
           <p className="text-2xl font-semibold text-th-accent">Drop files to upload</p>
+        </div>
+      )}
+
+      {commandResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setCommandResult(null)}>
+          <div className="max-w-2xl max-h-[80vh] overflow-auto rounded-xl bg-th-bg border border-th-border p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <pre className="whitespace-pre-wrap text-sm text-th-text font-mono">{commandResult}</pre>
+            <button onClick={() => setCommandResult(null)} className="mt-4 px-4 py-2 rounded-lg bg-th-accent text-white text-sm">Dismiss</button>
+          </div>
         </div>
       )}
 
