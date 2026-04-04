@@ -66,8 +66,6 @@ def test_extracts_queue_and_task_notification_events():
     assert events[2].data["task_id"] == "bg-2"
 
 
-
-
 def test_preserves_assistant_text_around_embedded_task_notification():
     events = normalize_jsonl_entries(
         [
@@ -93,7 +91,7 @@ def test_parses_xml_task_notification_payload_into_useful_fields():
             {
                 "type": "assistant",
                 "message": {
-                    "content": "<task-notification>\n<task-id>a6d5c1e0</task-id>\n<status>completed</status>\n<summary>Agent \"Match line items to docs\" completed</summary>\n<result>done</result>\n</task-notification>"
+                    "content": '<task-notification>\n<task-id>a6d5c1e0</task-id>\n<status>completed</status>\n<summary>Agent "Match line items to docs" completed</summary>\n<result>done</result>\n</task-notification>'
                 },
             }
         ]
@@ -127,7 +125,7 @@ def test_derives_human_meaningful_milestones_and_label_source():
             {
                 "type": "assistant",
                 "message": {
-                    "content": "<task-notification><task-id>bg-1</task-id><status>completed</status><summary>Agent \"Match line items to docs\" completed</summary></task-notification>"
+                    "content": '<task-notification><task-id>bg-1</task-id><status>completed</status><summary>Agent "Match line items to docs" completed</summary></task-notification>'
                 },
             },
         ]
@@ -168,7 +166,7 @@ def test_derives_snapshot_and_session_state(tmp_path):
     )
 
     session = CCSession(id="session-1", working_dir=str(tmp_path), _jsonl_path=str(jsonl_path))
-    session._parse_question_screen = lambda: {"question": "Need input?", "options": []}  # type: ignore[method-assign]
+    session._tmux_shows_question = lambda: True  # type: ignore[method-assign]
     session._is_tmux_idle = lambda: True  # type: ignore[method-assign]
 
     entries = session.progress_entries()

@@ -1,17 +1,17 @@
 import threading
 import time
+from datetime import datetime, timezone
 
 import pytest
-from fastapi.testclient import TestClient
-
 import server
 from cchost import QuestionOption, Response
+from fastapi.testclient import TestClient
 from progress import ProgressEvent, ProgressSnapshot
 
 
 class FakeSession:
     def __init__(self):
-        self.created_at = server._time.time()
+        self.created_at = datetime.now(timezone.utc)
         self.id = "session-1"
         self.working_dir = "/tmp/session-1"
         self.send_started = threading.Event()
@@ -97,14 +97,7 @@ class FakeHost:
 def client(monkeypatch):
     session = FakeSession()
     monkeypatch.setattr(server, "host", FakeHost(session))
-    if hasattr(server, "_session_runs"):
-        server._session_runs.clear()
-    if hasattr(server, "_runs"):
-        server._runs.clear()
-    if hasattr(server, "_progress_history"):
-        server._progress_history.clear()
-    if hasattr(server, "_session_slots"):
-        server._session_slots.clear()
+    monkeypatch.setattr(server, "run_manager", server.RunManager())
     return TestClient(server.app), session
 
 
@@ -172,14 +165,14 @@ def test_async_run_lifecycle_and_progress_snapshot(client):
 
 def test_pending_progress_poll_does_not_contaminate_async_run_history(client, monkeypatch):
     test_client, session = client
-    original_execute = server._execute_send_run
+    original_execute = server.run_manager.execute_send_run
     release_worker = threading.Event()
 
     def delayed_execute(run_id, session_obj, message, timeout):
         release_worker.wait(timeout=1)
         return original_execute(run_id, session_obj, message, timeout)
 
-    monkeypatch.setattr(server, "_execute_send_run", delayed_execute)
+    monkeypatch.setattr(server.run_manager, "execute_send_run", delayed_execute)
 
     create_response = test_client.post(
         f"/api/sessions/{session.id}/runs",
@@ -352,10 +345,9 @@ def test_completed_run_allows_legacy_answer_fallback(client):
     assert session.answer_calls == [1]
 
 
-
 def test_send_and_run_creation_are_atomically_exclusive(client, monkeypatch):
     test_client, session = client
-    original_check = server._require_no_active_run
+    original_check = server.run_manager.require_no_active_run
     checked = threading.Event()
     release_check = threading.Event()
     send_response_holder: dict[str, object] = {}
@@ -365,7 +357,7 @@ def test_send_and_run_creation_are_atomically_exclusive(client, monkeypatch):
         checked.set()
         release_check.wait(timeout=1)
 
-    monkeypatch.setattr(server, "_require_no_active_run", wrapped_check)
+    monkeypatch.setattr(server.run_manager, "require_no_active_run", wrapped_check)
 
     def submit_legacy_send():
         send_response_holder["response"] = test_client.post(
@@ -416,7 +408,6 @@ def test_answer_rejects_when_active_run_is_not_waiting_for_input(client):
     assert session.answer_calls == []
 
     session.send_continue.set()
-
 
 
 def test_blocking_send_rejects_while_async_run_is_active(client):
@@ -489,7 +480,6 @@ def test_tracked_answer_uses_exposed_sparse_option_indexes(client):
     assert session.answer_calls == [3]
 
 
-
 def test_waiting_run_rejects_concurrent_answer_requests(client, monkeypatch):
     test_client, session = client
     session.send_response = Response(
@@ -515,7 +505,7 @@ def test_waiting_run_rejects_concurrent_answer_requests(client, monkeypatch):
     session.send_continue.set()
     _wait_for_status(test_client, session.id, run_id, "waiting_for_input")
 
-    original_continue = server._continue_run_with_answer
+    original_continue = server.run_manager.continue_run_with_answer
     first_claimed = threading.Event()
     release_continue = threading.Event()
 
@@ -524,7 +514,7 @@ def test_waiting_run_rejects_concurrent_answer_requests(client, monkeypatch):
         release_continue.wait(timeout=1)
         return original_continue(run, session_obj, option_index)
 
-    monkeypatch.setattr(server, "_continue_run_with_answer", wrapped_continue)
+    monkeypatch.setattr(server.run_manager, "continue_run_with_answer", wrapped_continue)
 
     session.answer_response = Response(text="first answer", role="assistant")
     first_answer_holder: dict[str, object] = {}
@@ -601,7 +591,6 @@ def test_tracked_answer_rejects_invalid_option_index(client, option_index):
     assert session.answer_calls == []
 
 
-
 def test_legacy_answer_requires_active_question_prompt(client):
     test_client, session = client
 
@@ -613,7 +602,6 @@ def test_legacy_answer_requires_active_question_prompt(client):
     assert response.status_code == 409
     assert response.json()["detail"] == "Session is not waiting for an answer"
     assert session.answer_calls == []
-
 
 
 def test_legacy_answer_rejects_invalid_option_index(client):

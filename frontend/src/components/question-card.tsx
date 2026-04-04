@@ -18,26 +18,26 @@ export function QuestionCard({ run, onAnswer, className }: QuestionCardProps) {
 
   return (
     <section className={className}>
-      <div className="rounded-3xl border border-amber-400/20 bg-amber-400/10 p-4 shadow-[0_20px_60px_rgba(0,0,0,0.14)] backdrop-blur">
+      <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-amber-200/80">Question</p>
-            <h3 className="mt-1 text-lg font-semibold text-white">
+            <p className="text-[11px] font-semibold uppercase tracking-widest text-amber-700">Question</p>
+            <h3 className="mt-1 text-lg font-semibold text-gray-900">
               {question?.question || "Waiting for a response"}
             </h3>
           </div>
-          <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-amber-100">
+          <span className="rounded-full border border-amber-400 bg-amber-100 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wider text-amber-700">
             {getProgressRunStatusText(run)}
           </span>
         </div>
 
         <div className="mt-4 space-y-2">
           {options.length === 0 ? (
-            <p className="rounded-2xl border border-dashed border-amber-300/20 bg-black/15 px-4 py-3 text-sm text-amber-50/80">
+            <p className="rounded-lg border border-dashed border-amber-300 bg-amber-100/50 px-4 py-3 text-sm text-amber-800">
               The model is waiting for input, but no answer options were provided.
             </p>
           ) : !onAnswer ? (
-            <p className="rounded-2xl border border-dashed border-white/10 bg-black/10 px-4 py-3 text-sm text-zinc-400">
+            <p className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-600">
               Answer buttons are read-only until an answer handler is connected.
             </p>
           ) : (
@@ -46,15 +46,15 @@ export function QuestionCard({ run, onAnswer, className }: QuestionCardProps) {
                 key={option.index}
                 type="button"
                 onClick={() => onAnswer(option.index)}
-                className="flex w-full items-center justify-between gap-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-left transition hover:border-amber-300/30 hover:bg-black/30"
+                className="flex w-full items-center justify-between gap-3 rounded-lg border border-gray-300 bg-white px-4 py-3 text-left transition hover:border-[var(--th-accent)] hover:bg-orange-50"
               >
                 <span className="min-w-0">
-                  <span className="block text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                  <span className="block text-[11px] font-semibold uppercase tracking-wider text-gray-500">
                     Option {option.index}
                   </span>
-                  <span className="mt-1 block text-sm text-zinc-100">{option.label}</span>
+                  <span className="mt-1 block text-sm text-gray-800">{option.label}</span>
                 </span>
-                <span className="shrink-0 rounded-full border border-amber-300/20 bg-amber-300/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-amber-100">
+                <span className="shrink-0 rounded-full border border-[var(--th-accent)] bg-orange-50 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wider text-[var(--th-accent)]">
                   Send
                 </span>
               </button>

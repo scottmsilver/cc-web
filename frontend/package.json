@@ -9,13 +9,13 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^3.0.49",
-    "@ai-sdk/react": "^3.0.145",
-    "ai": "^6.0.143",
     "next": "16.2.2",
+    "pdfjs-dist": "4.10.38",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "react-markdown": "^10.1.0"
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

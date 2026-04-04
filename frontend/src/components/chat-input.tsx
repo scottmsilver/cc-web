@@ -1,13 +1,13 @@
 "use client";
 
-import { useRef, useState, type FormEvent, type DragEvent } from "react";
+import { useRef, useState, useEffect, type FormEvent, type DragEvent } from "react";
 
-const CCHOST_API = "http://localhost:8420";
+import { uploadFile as apiUploadFile } from "@/lib/api";
 
-type PendingFile = {
-  name: string;
-  file: File;
-  uploaded: boolean;
+type UploadedFile = {
+  originalName: string;
+  serverName: string;
+  status: "uploading" | "uploaded" | "error";
 };
 
 export function ChatInput({
@@ -16,76 +16,95 @@ export function ChatInput({
   sessionId,
   onFilesUploaded,
   ensureSession,
+  sessionFiles,
 }: {
   onSend: (message: string) => void;
   disabled: boolean;
   sessionId: string | null;
   onFilesUploaded?: (files: string[]) => void;
   ensureSession?: () => Promise<string>;
+  sessionFiles?: string[];
 }) {
   const [input, setInput] = useState("");
-  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
-  const [uploading, setUploading] = useState(false);
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [dragOver, setDragOver] = useState(false);
+  const [showAtMenu, setShowAtMenu] = useState(false);
+  const [atFilter, setAtFilter] = useState("");
+  const [atCursorPos, setAtCursorPos] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
 
-  const uploadFiles = async (files: File[]): Promise<string[]> => {
-    // Ensure we have a session before uploading
+  const allUploaded = uploadedFiles.length === 0 || uploadedFiles.every((f) => f.status === "uploaded");
+
+  // Upload a single file immediately
+  const uploadFileImmediately = async (file: File) => {
+    // Add to list as "uploading"
+    const entry: UploadedFile = { originalName: file.name, serverName: file.name, status: "uploading" };
+    setUploadedFiles((prev) => [...prev, entry]);
+
+    // Ensure session exists
     let sid = sessionId;
     if (!sid && ensureSession) {
       sid = await ensureSession();
     }
-    if (!sid) return [];
-    setUploading(true);
-    const formData = new FormData();
-    files.forEach((f) => formData.append(f.name, f));
-    try {
-      const res = await fetch(
-        `${CCHOST_API}/api/sessions/${sid}/upload`,
-        { method: "POST", body: formData }
+    if (!sid) {
+      setUploadedFiles((prev) =>
+        prev.map((f) => (f === entry ? { ...f, status: "error" } : f))
       );
-      const data = await res.json();
-      const uploaded = data.uploaded || [];
-      // Immediately notify parent so Files tab refreshes
-      if (uploaded.length > 0) {
-        onFilesUploaded?.(uploaded);
+      return;
+    }
+
+    try {
+      const uploaded = await apiUploadFile(sid, file);
+
+      if (uploaded.length === 0) {
+        throw new Error("Server returned empty upload list");
       }
-      return uploaded;
-    } catch {
-      return [];
-    } finally {
-      setUploading(false);
+
+      const serverName = uploaded[0];
+
+      setUploadedFiles((prev) =>
+        prev.map((f) =>
+          f.originalName === file.name && f.status === "uploading"
+            ? { ...f, serverName, status: "uploaded" }
+            : f
+        )
+      );
+
+      onFilesUploaded?.(uploaded);
+    } catch (error) {
+      console.warn("File upload failed:", error);
+      setUploadedFiles((prev) =>
+        prev.map((f) =>
+          f.originalName === file.name && f.status === "uploading"
+            ? { ...f, status: "error" }
+            : f
+        )
+      );
     }
   };
 
   const addFiles = (fileList: FileList | File[]) => {
-    const newFiles = Array.from(fileList).map((f) => ({
-      name: f.name,
-      file: f,
-      uploaded: false,
-    }));
-    setPendingFiles((prev) => [...prev, ...newFiles]);
+    Array.from(fileList).forEach((f) => void uploadFileImmediately(f));
   };
 
-  const removeFile = (name: string) => {
-    setPendingFiles((prev) => prev.filter((f) => f.name !== name));
+  const removeFile = (originalName: string) => {
+    setUploadedFiles((prev) => prev.filter((f) => f.originalName !== originalName));
   };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (disabled || (!input.trim() && pendingFiles.length === 0)) return;
+    if (disabled || !allUploaded) return;
+    if (!input.trim() && uploadedFiles.length === 0) return;
 
-    // Upload pending files first
-    let fileNames: string[] = [];
-    if (pendingFiles.length > 0) {
-      fileNames = await uploadFiles(pendingFiles.map((f) => f.file));
-    }
+    // Build message with @file references for uploaded files
+    const fileRefs = uploadedFiles
+      .filter((f) => f.status === "uploaded")
+      .map((f) => `@./${f.serverName}`);
 
-    // Build message with @file references (Claude Code native format)
     let message = input.trim();
-    if (fileNames.length > 0) {
-      const atRefs = fileNames.map((f) => `@${f}`).join(" ");
+    if (fileRefs.length > 0) {
+      const atRefs = fileRefs.join(" ");
       if (message) {
         message = `${atRefs} ${message}`;
       } else {
@@ -96,7 +115,8 @@ export function ChatInput({
     if (message) {
       onSend(message);
       setInput("");
-      setPendingFiles([]);
+      setUploadedFiles([]);
+      setShowAtMenu(false);
     }
   };
 
@@ -108,31 +128,88 @@ export function ChatInput({
     }
   };
 
+  // @ autocomplete logic
+  const handleInputChange = (value: string) => {
+    setInput(value);
+    const cursorPos = textInputRef.current?.selectionStart ?? value.length;
+    // Find the @ token at cursor
+    const beforeCursor = value.slice(0, cursorPos);
+    const atMatch = beforeCursor.match(/@([^\s]*)$/);
+    if (atMatch && sessionFiles && sessionFiles.length > 0) {
+      setShowAtMenu(true);
+      setAtFilter(atMatch[1].toLowerCase());
+      setAtCursorPos(cursorPos);
+    } else {
+      setShowAtMenu(false);
+    }
+  };
+
+  const filteredFiles = (sessionFiles || []).filter((f) =>
+    !atFilter || f.toLowerCase().includes(atFilter)
+  );
+
+  const insertAtReference = (filename: string) => {
+    const beforeCursor = input.slice(0, atCursorPos);
+    const atMatch = beforeCursor.match(/@([^\s]*)$/);
+    if (atMatch) {
+      const start = atCursorPos - atMatch[0].length;
+      const after = input.slice(atCursorPos);
+      const newInput = input.slice(0, start) + `@./${filename} ` + after;
+      setInput(newInput);
+    }
+    setShowAtMenu(false);
+    textInputRef.current?.focus();
+  };
+
+  // Close @ menu on blur (with delay for click)
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest("[data-at-menu]") && !target.closest("input[type=text]")) {
+        setShowAtMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
   return (
     <div
-      className={`border-t border-[#3a3a3a] ${dragOver ? "bg-[#2a2520] border-[#d77757]/50" : ""}`}
+      className={`border-t border-gray-300 ${dragOver ? "bg-orange-50 border-[var(--th-accent)]/50" : ""}`}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
     >
-      {/* Pending files */}
-      {pendingFiles.length > 0 && (
+      {/* Uploaded file chips */}
+      {uploadedFiles.length > 0 && (
         <div className="px-4 pt-3 flex flex-wrap gap-2">
-          {pendingFiles.map((f) => (
+          {uploadedFiles.map((f) => (
             <span
-              key={f.name}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#232323] border border-[#3a3a3a] text-xs"
+              key={f.originalName}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border ${
+                f.status === "uploading"
+                  ? "bg-yellow-50 border-yellow-300 text-yellow-800"
+                  : f.status === "error"
+                    ? "bg-red-50 border-red-300 text-red-700"
+                    : "bg-green-50 border-green-300 text-green-800"
+              }`}
             >
-              <span className="opacity-60">
-                {f.name.endsWith(".pdf") ? "📄" : f.name.endsWith(".xlsx") ? "📊" : "📎"}
+              <span>
+                {f.status === "uploading" ? "\u23F3" : f.status === "error" ? "\u26A0" : "\u2713"}
               </span>
-              <span className="text-[#e8e4df] max-w-[200px] truncate">{f.name}</span>
-              <button
-                onClick={() => removeFile(f.name)}
-                className="text-[#8a8580] hover:text-[#d77757] ml-0.5"
-              >
-                ×
-              </button>
+              <span className="max-w-[200px] truncate">
+                {f.serverName !== f.originalName && f.status === "uploaded"
+                  ? `${f.serverName} (was ${f.originalName})`
+                  : f.originalName}
+              </span>
+              {f.status !== "uploading" && (
+                <button
+                  onClick={() => removeFile(f.originalName)}
+                  className="hover:text-[var(--th-accent)] ml-0.5"
+                >
+                  \u00D7
+                </button>
+              )}
             </span>
           ))}
         </div>
@@ -140,54 +217,94 @@ export function ChatInput({
 
       {/* Input row */}
       <form onSubmit={handleSubmit} className="p-3 flex items-center gap-2">
-        {/* Attach button — always clickable */}
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="flex items-center justify-center w-10 h-10 rounded-xl hover:bg-[#2d2d2d] text-[#8a8580] hover:text-[#d77757] transition-colors flex-shrink-0"
-          title="Attach files"
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
-          </svg>
-        </button>
         <input
           ref={fileInputRef}
           type="file"
           multiple
           className="hidden"
-          onChange={(e) => e.target.files && addFiles(e.target.files)}
+          onChange={(e) => {
+            if (e.target.files) addFiles(e.target.files);
+            e.target.value = "";
+          }}
         />
 
-        {/* Text input */}
-        <input
-          ref={textInputRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={
-            uploading
-              ? "Uploading files..."
-              : pendingFiles.length > 0
-                ? `Message about ${pendingFiles.length} file(s)...`
-                : "Message Claude Code..."
-          }
-          disabled={disabled || uploading}
-          className="flex-1 bg-[#232323] border border-[#3a3a3a] rounded-xl px-4 py-2.5 text-sm text-[#e8e4df] focus:outline-none focus:border-[#d77757]/50 focus:ring-1 focus:ring-[#d77757]/20 placeholder-[#6a6560] disabled:opacity-50 transition-all"
-        />
+        <div className="relative flex flex-1 items-center bg-white border border-gray-300 rounded-xl px-2 focus-within:border-[var(--th-accent)]/50 focus-within:ring-1 focus-within:ring-[var(--th-accent)]/20 transition-all">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center justify-center w-8 h-8 rounded-full text-gray-700 hover:text-[var(--th-accent)] hover:bg-gray-100 transition-colors flex-shrink-0 text-lg font-light"
+            title="Attach files"
+          >
+            +
+          </button>
+          <input
+            ref={textInputRef}
+            type="text"
+            value={input}
+            onChange={(e) => handleInputChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (showAtMenu && filteredFiles.length > 0) {
+                if (e.key === "Tab" || e.key === "Enter") {
+                  e.preventDefault();
+                  insertAtReference(filteredFiles[0]);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  setShowAtMenu(false);
+                  return;
+                }
+              }
+              if (e.key === "Enter" && !e.shiftKey && !showAtMenu) {
+                e.preventDefault();
+                const form = e.currentTarget.closest("form");
+                form?.requestSubmit();
+              }
+            }}
+            placeholder={
+              !allUploaded
+                ? "Uploading files..."
+                : uploadedFiles.length > 0
+                  ? `Message about ${uploadedFiles.length} file(s)... (type @ to reference files)`
+                  : "Message Claude Code... (type @ to reference files)"
+            }
+            disabled={disabled || !allUploaded}
+            className="flex-1 bg-transparent px-2 py-2.5 text-sm text-gray-900 focus:outline-none placeholder-gray-500 disabled:opacity-50"
+          />
+          <button
+            type="submit"
+            disabled={disabled || !allUploaded || (!input.trim() && uploadedFiles.length === 0)}
+            className="flex items-center justify-center w-8 h-8 rounded-lg bg-[var(--th-accent)] hover:bg-[var(--th-accent-hover)] disabled:bg-gray-200 disabled:text-gray-600 text-white transition-colors disabled:cursor-not-allowed flex-shrink-0 mr-1"
+          >
+            ↑
+          </button>
 
-        {/* Send button */}
-        <button
-          type="submit"
-          disabled={disabled || uploading || (!input.trim() && pendingFiles.length === 0)}
-          className="flex items-center justify-center w-10 h-10 rounded-xl bg-[#d77757] hover:bg-[#c46847] disabled:bg-[#333333] disabled:text-[#6a6560] text-white transition-colors disabled:cursor-not-allowed flex-shrink-0"
-        >
-          ↑
-        </button>
+          {/* @ autocomplete dropdown */}
+          {showAtMenu && filteredFiles.length > 0 && (
+            <div
+              data-at-menu
+              className="absolute bottom-full left-0 mb-1 w-80 max-h-48 overflow-y-auto rounded-lg border border-gray-300 bg-white shadow-lg z-50"
+            >
+              <div className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-gray-500 border-b border-gray-200">
+                Files in session
+              </div>
+              {filteredFiles.map((file) => (
+                <button
+                  key={file}
+                  type="button"
+                  onClick={() => insertAtReference(file)}
+                  className="w-full px-3 py-2 text-left text-sm text-gray-800 hover:bg-orange-50 hover:text-[var(--th-accent)] font-mono truncate"
+                >
+                  {file}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </form>
 
       {dragOver && (
-        <div className="absolute inset-0 bg-[#d77757]/10 border-2 border-dashed border-[#d77757]/50 rounded-xl flex items-center justify-center pointer-events-none z-10">
-          <p className="text-[#d77757] font-medium">Drop files here</p>
+        <div className="absolute inset-0 bg-orange-50 border-2 border-dashed border-[var(--th-accent)]/50 rounded-xl flex items-center justify-center pointer-events-none z-10">
+          <p className="text-[var(--th-accent)] font-medium">Drop files here</p>
         </div>
       )}
     </div>

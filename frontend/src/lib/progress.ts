@@ -53,6 +53,10 @@ export type ProgressSnapshotResponse = {
 export type ProgressResponse = {
   snapshot: ProgressSnapshotResponse;
   run: RunResponse | null;
+  pending_question?: {
+    question: string;
+    options: { label: string; description?: string; index: number }[];
+  } | null;
 };
 
 export type ProgressEventCategory =
@@ -71,10 +75,6 @@ export type ProgressSnapshotSummary = {
   statusText: string;
   activityText: string;
 };
-
-type FetchLike = typeof fetch;
-
-const DEFAULT_API_BASE = "/api";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -221,41 +221,6 @@ export function normalizeProgressEvent(event: ProgressEventResponse): ProgressEv
 
 export function sortQuestionOptions(options: QuestionOptionResponse[]): QuestionOptionResponse[] {
   return [...options].sort((left, right) => left.index - right.index);
-}
-
-export function buildProgressUrl(sessionId: string, apiBase = DEFAULT_API_BASE): string {
-  return `${apiBase}/sessions/${encodeURIComponent(sessionId)}/progress`;
-}
-
-export async function fetchProgress(
-  sessionId: string,
-  options: {
-    apiBase?: string;
-    fetchImpl?: FetchLike;
-    signal?: AbortSignal;
-  } = {},
-): Promise<ProgressResponse> {
-  const response = await (options.fetchImpl ?? fetch)(buildProgressUrl(sessionId, options.apiBase), {
-    signal: options.signal,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch progress: HTTP ${response.status}`);
-  }
-
-  return (await response.json()) as ProgressResponse;
-}
-
-export async function fetchProgressSnapshot(
-  sessionId: string,
-  options: {
-    apiBase?: string;
-    fetchImpl?: FetchLike;
-    signal?: AbortSignal;
-  } = {},
-): Promise<ProgressSnapshotResponse> {
-  const payload = await fetchProgress(sessionId, options);
-  return payload.snapshot;
 }
 
 export function getProgressRunStatusText(run: RunResponse | null | undefined): string {

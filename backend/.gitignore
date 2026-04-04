@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.env.*
+*.egg-info/
+.worktrees/
+*.jsonl
+.cchost-events.jsonl
+librechat/

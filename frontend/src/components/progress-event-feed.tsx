@@ -15,11 +15,9 @@ import {
 
 const FILTERS: { key: ProgressEventCategory; label: string }[] = [
   { key: "all", label: "All" },
-  { key: "messages", label: "Messages" },
+  { key: "messages", label: "Msg" },
   { key: "tools", label: "Tools" },
-  { key: "background", label: "Background" },
-  { key: "notifications", label: "Notifications" },
-  { key: "thinking", label: "Thinking" },
+  { key: "thinking", label: "Think" },
   { key: "other", label: "Other" },
 ];
 
@@ -33,26 +31,15 @@ export function ProgressEventFeed({ snapshot, className }: ProgressEventFeedProp
   const events = snapshot.events;
 
   const filteredEvents = useMemo(() => {
-    if (filter === "all") {
-      return events;
-    }
+    if (filter === "all") return events;
     return events.filter((event) => getProgressEventCategory(event) === filter);
   }, [events, filter]);
 
   return (
     <section className={className}>
-      <div className="rounded-3xl border border-white/10 bg-white/5 p-4 shadow-[0_20px_60px_rgba(0,0,0,0.16)] backdrop-blur">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-zinc-400">Event feed</p>
-            <h3 className="mt-1 text-lg font-semibold text-white">Compact event stream</h3>
-          </div>
-          <div className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs text-zinc-300">
-            {filteredEvents.length}/{events.length}
-          </div>
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-2">
+      <div className="rounded-lg border border-gray-300 bg-white">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200">
+          <span className="text-xs font-medium text-gray-700 mr-1">Events</span>
           {FILTERS.map((item) => {
             const active = item.key === filter;
             return (
@@ -60,42 +47,35 @@ export function ProgressEventFeed({ snapshot, className }: ProgressEventFeedProp
                 key={item.key}
                 type="button"
                 onClick={() => setFilter(item.key)}
-                className={[
-                  "rounded-full border px-3 py-1.5 text-xs font-medium transition",
+                className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
                   active
-                    ? "border-emerald-400/40 bg-emerald-400/15 text-emerald-200"
-                    : "border-white/10 bg-black/15 text-zinc-400 hover:border-white/20 hover:text-zinc-200",
-                ].join(" ")}
+                    ? "bg-[var(--th-accent)] text-white"
+                    : "text-gray-600 hover:bg-gray-100"
+                }`}
               >
                 {item.label}
               </button>
             );
           })}
+          <span className="ml-auto text-[11px] text-gray-500">{filteredEvents.length}/{events.length}</span>
         </div>
 
-        <div className="mt-4 space-y-2">
+        <div className="divide-y divide-gray-100 max-h-[500px] overflow-y-auto">
           {filteredEvents.length === 0 ? (
-            <p className="rounded-2xl border border-dashed border-white/10 bg-black/10 px-4 py-3 text-sm text-zinc-400">
-              No events match this filter.
-            </p>
+            <p className="px-3 py-2 text-xs text-gray-500">No events.</p>
           ) : (
             filteredEvents.map((event: ProgressEventResponse, index) => (
-              <article key={`${event.kind}-${index}`} className="rounded-2xl border border-white/10 bg-black/15 p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
-                      {getProgressEventLabel(event)}
-                    </p>
-                    <p className="mt-1 text-sm text-zinc-100">{getProgressEventPreview(event)}</p>
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end gap-1">
-                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-zinc-300">
-                      {getProgressEventBadgeText(event)}
-                    </span>
-                    <span className="text-[11px] text-zinc-500">{formatConfidence(event.confidence)}</span>
-                  </div>
-                </div>
-              </article>
+              <div key={`${event.kind}-${index}`} className="flex items-baseline gap-2 px-3 py-1.5 text-xs">
+                <span className="w-14 flex-shrink-0 text-[10px] uppercase tracking-wider text-gray-500 font-medium">
+                  {getProgressEventBadgeText(event)}
+                </span>
+                <span className="text-gray-800 truncate flex-1">
+                  {getProgressEventPreview(event) || getProgressEventLabel(event)}
+                </span>
+                <span className="text-[10px] text-gray-400 flex-shrink-0">
+                  {formatConfidence(event.confidence)}
+                </span>
+              </div>
             ))
           )}
         </div>
