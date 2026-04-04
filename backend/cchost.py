@@ -61,16 +61,19 @@ class Response:
     questions: list[dict] = field(default_factory=list)  # [{question, options: [QuestionOption]}]
 
 
+_OVERLAY_FOOTERS = ("to dismiss", "esc to cancel", "esc to close")
+
+
 def _has_overlay_footer(text: str) -> bool:
-    """Check if tmux pane content shows an overlay footer (dismiss/cancel)."""
+    """Check if tmux pane content shows an overlay footer."""
     lower = text.lower()
-    return "to dismiss" in lower or "esc to cancel" in lower
+    return any(f in lower for f in _OVERLAY_FOOTERS)
 
 
 def _is_overlay_footer_line(line: str) -> bool:
     """Check if a single line is an overlay footer."""
     lower = line.strip().lower()
-    return "to dismiss" in lower or "esc to cancel" in lower
+    return any(f in lower for f in _OVERLAY_FOOTERS)
 
 
 @dataclass
