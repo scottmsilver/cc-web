@@ -19,11 +19,11 @@ import logging
 import os
 import threading
 import uuid
-
-logger = logging.getLogger("cchost")
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Optional
+
+logger = logging.getLogger("cchost")
 
 import uvicorn
 from cchost import CCHost, CCSession
@@ -349,7 +349,7 @@ class RunManager:
             if run.status in {"completed", "error"}:
                 self._session_slots.discard(run.session_id)
 
-    def continue_run_with_answer(self, run: RunState, session, option_index: int):
+    def continue_run_with_answer(self, run: RunState, session, option_index: int) -> Optional:
         try:
             response = session.answer(option_index=option_index)
         except Exception as exc:
@@ -360,7 +360,7 @@ class RunManager:
                     current.error = str(exc)
                     current.finished_at = _utcnow_iso()
                     self._session_slots.discard(current.session_id)
-            raise
+            return None
 
         with self._lock:
             current = self._runs.get(run.run_id)
@@ -467,8 +467,7 @@ def create_run(session_id: str, req: SendRequest):
     )
     worker.start()
 
-    run_state = run_manager.get_run(run.run_id)
-    return RunResponse(**_serialize_run(run_state))
+    return RunResponse(**_serialize_run(run))
 
 
 @app.get("/api/sessions/{session_id}/runs/{run_id}", response_model=RunResponse)
@@ -529,6 +528,8 @@ def answer_question(session_id: str, req: AnswerRequest):
     if _is_active_run(run):
         claimed_run = run_manager.claim_waiting_run_for_answer(session_id, req.option_index)
         response = run_manager.continue_run_with_answer(claimed_run, session, req.option_index)
+        if response is None:
+            raise HTTPException(status_code=500, detail="Failed to process answer")
     else:
         run_manager.require_no_active_run(session_id)
         try:
@@ -547,6 +548,8 @@ def answer_question(session_id: str, req: AnswerRequest):
 def toggle_option(session_id: str, req: AnswerRequest):
     """Toggle a checkbox in a multi-select question."""
     session = _get_session_or_404(session_id)
+    if not session.question_status():
+        raise HTTPException(status_code=409, detail="No question is currently displayed")
     session.toggle_option(req.option_index)
     return {"ok": True}
 
@@ -555,6 +558,8 @@ def toggle_option(session_id: str, req: AnswerRequest):
 def submit_multiselect(session_id: str):
     """Submit a multi-select question after toggling options."""
     session = _get_session_or_404(session_id)
+    if not session.question_status():
+        raise HTTPException(status_code=409, detail="No question is currently displayed")
     response = session.submit_multiselect()
     return SendResponse(**_serialize_send_response(response))
 

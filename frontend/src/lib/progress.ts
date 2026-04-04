@@ -1,6 +1,7 @@
 export type QuestionOptionResponse = {
   label: string;
   index: number;
+  description?: string;
 };
 
 export type QuestionResponse = {

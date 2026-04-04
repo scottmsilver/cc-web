@@ -141,7 +141,6 @@ export default function Chat() {
   const [uploadDrag, setUploadDrag] = useState(false);
   const [progress, setProgress] = useState<ProgressResponse | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handledRunIdsRef = useRef<Set<string>>(new Set());
   const pollFailureCountRef = useRef(0);
@@ -220,10 +219,6 @@ export default function Chat() {
     const url = qs ? `?${qs}` : window.location.pathname;
     window.history.replaceState(null, "", url);
   }, [activeSession, activeTab]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, progress]);
 
   useEffect(() => {
     void fetchSessions();
@@ -681,7 +676,7 @@ export default function Chat() {
                   </div>
                 )}
 
-                <div ref={messagesEndRef} />
+
               </div>
               <ChatInput
                 onSend={sendMessage}

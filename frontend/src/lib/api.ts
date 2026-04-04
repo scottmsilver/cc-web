@@ -126,14 +126,16 @@ export async function readFile(
   sessionId: string,
   filePath: string,
 ): Promise<string> {
+  const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
   const res = await fetch(
-    `${CCHOST_API}/api/sessions/${sessionId}/files/${encodeURIComponent(filePath)}`,
+    `${CCHOST_API}/api/sessions/${sessionId}/files/${encodedPath}`,
   );
   return (await res.text()).substring(0, 50000);
 }
 
 export function getFileUrl(sessionId: string, filePath: string): string {
-  return `${CCHOST_API}/api/sessions/${sessionId}/files/${encodeURIComponent(filePath)}`;
+  const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+  return `${CCHOST_API}/api/sessions/${sessionId}/files/${encodedPath}`;
 }
 
 export async function uploadFile(

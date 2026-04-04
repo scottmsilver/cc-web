@@ -366,8 +366,7 @@ class CCSession:
         def _question_matches_screen(q: dict) -> bool:
             """Check if a structured question matches what's on tmux."""
             q_text = q.get("question", "")
-            words = q_text.split()[:5]
-            return bool(words) and all(w in screen for w in words)
+            return bool(q_text) and q_text[:50] in screen
 
         # 1. Hook events (best)
         q = self._unanswered_question_from_events()
@@ -436,8 +435,9 @@ class CCSession:
 
         try:
             server = self._tmux_session.server
-            server.cmd("load-buffer", tmp_path)
-            pane.cmd("paste-buffer", "-d")
+            buf_name = f"cchost-{self.id}"
+            server.cmd("load-buffer", "-b", buf_name, tmp_path)
+            pane.cmd("paste-buffer", "-b", buf_name, "-d")
             time.sleep(0.3)
             pane.send_keys("", enter=True)
         finally:
@@ -549,7 +549,7 @@ class CCSession:
         return self._wait_for_response(timeout)
 
     def _reset_cursors(self) -> tuple[str, int]:
-        """Reset JSONL and events cursors for a new response wait. Returns (events_path, events_line_count)."""
+        """Reset JSONL and events cursors for a new response wait. Returns (events_path, events_offset)."""
         self._jsonl_path = self._find_jsonl()
         if self._jsonl_path:
             with open(self._jsonl_path, "r") as f:
@@ -558,11 +558,11 @@ class CCSession:
             self._last_line_count = 0
 
         events_path = os.path.join(self.working_dir, ".cchost-events.jsonl")
-        events_line_count = 0
+        events_offset = 0
         if os.path.exists(events_path):
-            with open(events_path, "r") as f:
-                events_line_count = len(f.readlines())
-        return events_path, events_line_count
+            with open(events_path, "rb") as f:
+                events_offset = f.seek(0, 2)
+        return events_path, events_offset
 
     def _poll_once(
         self,
@@ -574,7 +574,7 @@ class CCSession:
 
         `state` is a mutable dict with keys:
           last_assistant_text, last_assistant_raw, saw_any_activity,
-          events_path, events_line_count, start_time
+          events_path, events_offset, start_time
         """
         # Early detection: if no activity after 30s, message may not have been delivered
         elapsed = time.time() - state["start_time"]
@@ -614,10 +614,11 @@ class CCSession:
         # Check hook events
         events_path = state["events_path"]
         if os.path.exists(events_path):
-            with open(events_path, "r") as f:
-                event_lines = f.readlines()
-            new_events = event_lines[state["events_line_count"] :]
-            state["events_line_count"] = len(event_lines)
+            with open(events_path, "rb") as f:
+                f.seek(state["events_offset"])
+                new_data = f.read()
+                state["events_offset"] = f.tell()
+            new_events = new_data.decode("utf-8", errors="replace").splitlines(True)
 
             for raw_line in new_events:
                 # Skip partial writes (line not terminated with newline)
@@ -659,14 +660,14 @@ class CCSession:
 
     def _wait_for_response(self, timeout: int = 600) -> Response:
         """Wait for Claude's response after sending a message or answering a question."""
-        events_path, events_line_count = self._reset_cursors()
+        events_path, events_offset = self._reset_cursors()
 
         state = {
             "last_assistant_text": "",
             "last_assistant_raw": {},
             "saw_any_activity": False,
             "events_path": events_path,
-            "events_line_count": events_line_count,
+            "events_offset": events_offset,
             "start_time": time.time(),
         }
 
@@ -710,8 +711,6 @@ class CCSession:
         entries: list[dict] = []
         # Track AskUserQuestion tool IDs so we can match answers
         ask_tool_ids: set[str] = set()
-        # Track all tool_use IDs so we can skip their tool_results
-        all_tool_ids: set[str] = set()
 
         def append_assistant(text: str, is_question: bool = False) -> None:
             if not text:
@@ -743,9 +742,6 @@ class CCSession:
                     elif btype == "tool_use":
                         tool_id = block.get("id", "")
                         tool_name = block.get("name", "")
-                        if tool_id:
-                            all_tool_ids.add(tool_id)
-
                         if tool_name == "AskUserQuestion":
                             if tool_id:
                                 ask_tool_ids.add(tool_id)

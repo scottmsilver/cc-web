@@ -73,8 +73,9 @@ let isWaitingForAnswer = false;
 
 async function ensureSession() {
   if (sessionId) return;
+  const rawUser = (document.cookie.match(/cchost_user=([^;]+)/)?.[1] || 'user').replace(/[\/\.]+/g, '');
   const res = await fetch('/api/sessions', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({session_id: 'ui-' + Date.now(), working_dir: '/home/' + (document.cookie.match(/cchost_user=([^;]+)/)?.[1] || 'user') + '/cchost-workspace'})});
+    body: JSON.stringify({session_id: 'ui-' + Date.now(), working_dir: '/home/' + rawUser + '/cchost-workspace'})});
   const data = await res.json();
   sessionId = data.id;
   document.getElementById('session-info').textContent = sessionId + ' -- ' + data.working_dir;
