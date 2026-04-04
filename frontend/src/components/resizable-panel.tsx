@@ -4,13 +4,13 @@ import { useCallback, useRef, useState, type ReactNode } from "react";
 
 export function ResizablePanel({
   left,
-  right,
+  right = null,
   defaultRightWidth,
   minRightWidth,
   maxRightWidth,
 }: {
   left: ReactNode;
-  right: ReactNode;
+  right?: ReactNode | null;
   defaultRightWidth?: number;
   minRightWidth?: number;
   maxRightWidth?: number;
@@ -46,11 +46,15 @@ export function ResizablePanel({
   return (
     <div className="flex flex-1 min-h-0">
       <div className="flex-1 flex flex-col min-h-0 min-w-0">{left}</div>
-      <div
-        className="w-1 cursor-col-resize bg-th-border hover:bg-th-accent active:bg-th-accent transition-colors flex-shrink-0"
-        onMouseDown={onMouseDown}
-      />
-      <div className="flex flex-col min-h-0" style={{ width: rightWidth }}>{right}</div>
+      {right && (
+        <>
+          <div
+            className="w-1 cursor-col-resize bg-th-border hover:bg-th-accent active:bg-th-accent transition-colors flex-shrink-0"
+            onMouseDown={onMouseDown}
+          />
+          <div className="flex flex-col min-h-0" style={{ width: rightWidth }}>{right}</div>
+        </>
+      )}
     </div>
   );
 }

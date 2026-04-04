@@ -694,45 +694,31 @@ export default function Chat() {
             </div>
           );
 
-          if (viewingImages) {
-            return (
-              <ResizablePanel
-                left={chatColumn}
-                right={
-                  <ImageGalleryViewer
-                    images={viewingImages.images}
-                    startIndex={viewingImages.index}
-                    onClose={() => setViewingImages(null)}
-                  />
-                }
-                defaultRightWidth={550}
-                minRightWidth={300}
-                maxRightWidth={900}
-              />
-            );
-          }
+          const rightPane = viewingImages ? (
+            <ImageGalleryViewer
+              images={viewingImages.images}
+              startIndex={viewingImages.index}
+              onClose={() => setViewingImages(null)}
+            />
+          ) : viewingFile && activeSession ? (
+            <ArtifactsPane
+              sessionId={activeSession}
+              files={files}
+              selectedFile={viewingFile}
+              onSelectFile={setViewingFile}
+              onClose={() => setViewingFile(null)}
+            />
+          ) : null;
 
-          if (viewingFile && activeSession) {
-            return (
-              <ResizablePanel
-                left={chatColumn}
-                right={
-                  <ArtifactsPane
-                    sessionId={activeSession}
-                    files={files}
-                    selectedFile={viewingFile}
-                    onSelectFile={setViewingFile}
-                    onClose={() => setViewingFile(null)}
-                  />
-                }
-                defaultRightWidth={550}
-                minRightWidth={300}
-                maxRightWidth={900}
-              />
-            );
-          }
-
-          return chatColumn;
+          return (
+            <ResizablePanel
+              left={chatColumn}
+              right={rightPane}
+              defaultRightWidth={550}
+              minRightWidth={300}
+              maxRightWidth={900}
+            />
+          );
         })()}
 
         {activeTab === "files" && (
