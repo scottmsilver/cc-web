@@ -681,7 +681,7 @@ export default function Chat() {
 
               </div>
               {sendError && (
-                <div className="mx-4 mb-2 flex items-center justify-between rounded-lg border border-th-error-bg bg-th-error-bg px-4 py-2 text-sm text-th-error-text">
+                <div className="mx-4 mb-2 flex items-center justify-between rounded-lg border border-th-error-text/30 bg-th-error-bg px-4 py-2 text-sm text-th-error-text">
                   <span>{sendError}</span>
                   <button onClick={() => setSendError(null)} className="ml-3 text-th-error-text hover:opacity-70">✕</button>
                 </div>
