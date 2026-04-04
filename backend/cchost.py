@@ -426,7 +426,9 @@ class CCSession:
 
     def _send_message_to_tmux(self, message: str) -> None:
         """Send a message to Claude Code via tmux, handling long messages safely."""
-        with self._tmux_lock:
+        if not self._tmux_lock.acquire(timeout=5):
+            raise RuntimeError("Session is busy — try again in a moment")
+        try:
             pane = self._tmux_session.active_window.active_pane
 
             # For short messages, send_keys works fine
@@ -449,6 +451,8 @@ class CCSession:
                 pane.send_keys("", enter=True)
             finally:
                 os.unlink(tmp_path)
+        finally:
+            self._tmux_lock.release()
 
     def send(self, message: str, timeout: int = 600) -> Response:
         """Send a message and wait for Claude's response."""

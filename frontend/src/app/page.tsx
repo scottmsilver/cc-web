@@ -129,6 +129,7 @@ function getRunText(run: RunResponse | null | undefined): string {
 
 export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [sendError, setSendError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isAnswering, setIsAnswering] = useState(false);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
@@ -450,8 +451,7 @@ export default function Chat() {
       setActiveTab("chat");
     } catch (error: unknown) {
       setPendingMessage(null);
-      const content = error instanceof Error ? `Error: ${error.message}` : "Error: Failed to start run.";
-      setMessages((prev) => [...prev, { id: makeMessageId("assistant"), role: "assistant", content }]);
+      setSendError(error instanceof Error ? error.message : "Failed to start run");
       setIsLoading(false);
     }
   };
@@ -680,8 +680,14 @@ export default function Chat() {
 
 
               </div>
+              {sendError && (
+                <div className="mx-4 mb-2 flex items-center justify-between rounded-lg border border-th-error-bg bg-th-error-bg px-4 py-2 text-sm text-th-error-text">
+                  <span>{sendError}</span>
+                  <button onClick={() => setSendError(null)} className="ml-3 text-th-error-text hover:opacity-70">✕</button>
+                </div>
+              )}
               <ChatInput
-                onSend={sendMessage}
+                onSend={(msg) => { setSendError(null); sendMessage(msg); }}
                 disabled={isLoading}
                 sessionId={activeSession}
                 ensureSession={ensureSession}
