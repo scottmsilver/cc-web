@@ -100,7 +100,7 @@ export function PendingQuestionCard({
         <p className="text-[11px] font-semibold uppercase tracking-widest text-amber-700 mb-2">
           {multi ? "Select all that apply" : "Choose one"}
         </p>
-        <p className="text-sm text-gray-900 mb-3">{question.question}</p>
+        <p className="text-sm text-th-text mb-3">{question.question}</p>
         <div className="space-y-2">
           {question.options
             .filter((opt) => !isSubmitOption(opt.label))
@@ -117,18 +117,18 @@ export function PendingQuestionCard({
                     onClick={() => void handleToggle(opt.index)}
                     className={`flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left transition disabled:opacity-50 ${
                       checked
-                        ? "border-[var(--th-accent)] bg-orange-50"
-                        : "border-gray-300 bg-white hover:border-[var(--th-accent)] hover:bg-orange-50"
+                        ? "border-th-accent bg-th-surface"
+                        : "border-th-border bg-th-bg hover:border-th-accent hover:bg-th-surface"
                     }`}
                   >
                     <span className={`flex-shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center text-xs ${
-                      checked ? "border-[var(--th-accent)] bg-[var(--th-accent)] text-white" : "border-gray-400"
+                      checked ? "border-th-accent bg-th-accent text-white" : "border-th-text-faint"
                     }`}>
                       {checked ? "\u2713" : ""}
                     </span>
                     <span>
-                      <span className="block text-sm text-gray-800">{label}</span>
-                      {opt.description && <span className="mt-0.5 block text-xs text-gray-500">{opt.description}</span>}
+                      <span className="block text-sm text-th-text">{label}</span>
+                      {opt.description && <span className="mt-0.5 block text-xs text-th-text-muted">{opt.description}</span>}
                     </span>
                   </button>
                 );
@@ -143,15 +143,15 @@ export function PendingQuestionCard({
                   onClick={() => void handleSingleSelect(opt.index)}
                   className={`flex w-full items-center justify-between gap-3 rounded-lg border px-4 py-3 text-left transition disabled:opacity-50 ${
                     isSelected
-                      ? "border-[var(--th-accent)] bg-orange-50 ring-1 ring-[var(--th-accent)]/30"
-                      : "border-gray-300 bg-white hover:border-[var(--th-accent)] hover:bg-orange-50"
+                      ? "border-th-accent bg-th-surface ring-1 ring-th-accent/30"
+                      : "border-th-border bg-th-bg hover:border-th-accent hover:bg-th-surface"
                   }`}
                 >
                   <span>
-                    <span className="block text-sm text-gray-800">{label}</span>
-                    {opt.description && <span className="mt-0.5 block text-xs text-gray-500">{opt.description}</span>}
+                    <span className="block text-sm text-th-text">{label}</span>
+                    {opt.description && <span className="mt-0.5 block text-xs text-th-text-muted">{opt.description}</span>}
                   </span>
-                  {isSelected && <span className="text-[var(--th-accent)] text-xs font-medium">Sending...</span>}
+                  {isSelected && <span className="text-th-accent text-xs font-medium">Sending...</span>}
                 </button>
               );
             })}
@@ -161,7 +161,7 @@ export function PendingQuestionCard({
             type="button"
             disabled={isDisabled}
             onClick={() => void handleSubmitMulti()}
-            className="mt-3 w-full rounded-lg bg-[var(--th-accent)] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[var(--th-accent-hover)] disabled:opacity-50"
+            className="mt-3 w-full rounded-lg bg-th-accent px-4 py-2.5 text-sm font-medium text-white transition hover:bg-th-accent-hover disabled:opacity-50"
           >
             Submit
           </button>

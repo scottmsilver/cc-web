@@ -8,12 +8,12 @@ import type { ContentBlock, JsonlEntry } from "@/lib/types";
 function ContentBlockView({ block }: { block: ContentBlock }) {
   if (block.type === "text" && block.text) {
     return (
-      <div className="text-gray-800 whitespace-pre-wrap">{block.text}</div>
+      <div className="text-th-text whitespace-pre-wrap">{block.text}</div>
     );
   }
   if (block.type === "thinking") {
     return (
-      <div className="text-gray-400 italic">
+      <div className="text-th-text-faint italic">
         thinking ({(block.thinking || "").length} chars)
       </div>
     );
@@ -30,14 +30,14 @@ function ContentBlockView({ block }: { block: ContentBlock }) {
       <div>
         <span className="text-purple-700 font-medium">{block.name}</span>
         {cmd && (
-          <pre className="mt-0.5 text-gray-700 bg-gray-50 rounded px-2 py-1 whitespace-pre-wrap">{cmd}</pre>
+          <pre className="mt-0.5 text-th-text bg-th-surface rounded px-2 py-1 whitespace-pre-wrap">{cmd}</pre>
         )}
-        {filePath && <span className="text-gray-600 ml-1">{filePath}</span>}
-        {pattern && <span className="text-gray-600 ml-1">{pattern}</span>}
-        {skill && <span className="text-gray-600 ml-1">{skill}</span>}
+        {filePath && <span className="text-th-text-muted ml-1">{filePath}</span>}
+        {pattern && <span className="text-th-text-muted ml-1">{pattern}</span>}
+        {skill && <span className="text-th-text-muted ml-1">{skill}</span>}
         {hasQuestions && <span className="text-amber-700 ml-1">AskUserQuestion</span>}
         {!hasDetail && (
-          <pre className="mt-0.5 text-gray-600 whitespace-pre-wrap">{JSON.stringify(inp, null, 2)}</pre>
+          <pre className="mt-0.5 text-th-text-muted whitespace-pre-wrap">{JSON.stringify(inp, null, 2)}</pre>
         )}
       </div>
     );
@@ -60,13 +60,13 @@ function ContentBlockView({ block }: { block: ContentBlock }) {
       }
     }
     return (
-      <div className="text-gray-500">
+      <div className="text-th-text-muted">
         result{preview ? `: ${preview}` : ""}
         {preview.length >= 200 ? "..." : ""}
       </div>
     );
   }
-  return <div className="text-gray-400">{block.type || "unknown"}</div>;
+  return <div className="text-th-text-faint">{block.type || "unknown"}</div>;
 }
 
 function EntryView({ entry, index }: { entry: JsonlEntry; index: number }) {
@@ -77,11 +77,11 @@ function EntryView({ entry, index }: { entry: JsonlEntry; index: number }) {
   // Skip non-conversation entries in compact view
   if (!["user", "assistant"].includes(t)) {
     return (
-      <div className="flex gap-2 px-3 py-1 text-gray-400 hover:bg-gray-50 cursor-pointer" onClick={() => setExpanded(!expanded)}>
+      <div className="flex gap-2 px-3 py-1 text-th-text-faint hover:bg-th-surface cursor-pointer" onClick={() => setExpanded(!expanded)}>
         <span className="w-5 text-right flex-shrink-0">{index}</span>
         <span>{t}</span>
         {expanded && (
-          <pre className="text-[10px] text-gray-500 whitespace-pre-wrap break-all">{JSON.stringify(entry, null, 2)}</pre>
+          <pre className="text-[10px] text-th-text-muted whitespace-pre-wrap break-all">{JSON.stringify(entry, null, 2)}</pre>
         )}
       </div>
     );
@@ -91,28 +91,28 @@ function EntryView({ entry, index }: { entry: JsonlEntry; index: number }) {
   const blocks = Array.isArray(content) ? content : [];
 
   return (
-    <div className="px-3 py-1.5 hover:bg-gray-50">
+    <div className="px-3 py-1.5 hover:bg-th-surface">
       <div className="flex gap-2 items-baseline">
-        <span className="w-5 text-right text-gray-400 flex-shrink-0">{index}</span>
+        <span className="w-5 text-right text-th-text-faint flex-shrink-0">{index}</span>
         <span className={`w-12 flex-shrink-0 font-medium ${typeColor}`}>{t}</span>
         <div className="flex-1 min-w-0 space-y-1">
           {blocks.map((block, j) => {
             if (typeof block === "string") {
-              return <div key={j} className="text-gray-800">{block.substring(0, 200)}</div>;
+              return <div key={j} className="text-th-text">{block.substring(0, 200)}</div>;
             }
             return <ContentBlockView key={j} block={block as ContentBlock} />;
           })}
-          {blocks.length === 0 && <span className="text-gray-400">(empty)</span>}
+          {blocks.length === 0 && <span className="text-th-text-faint">(empty)</span>}
         </div>
         <button
           onClick={() => setExpanded(!expanded)}
-          className="text-gray-400 hover:text-gray-700 flex-shrink-0"
+          className="text-th-text-faint hover:text-th-text flex-shrink-0"
         >
           {expanded ? "\u25BC" : "\u25B6"}
         </button>
       </div>
       {expanded && (
-        <pre className="mt-1 ml-20 text-[10px] text-gray-500 bg-gray-50 rounded p-2 whitespace-pre-wrap break-all border border-gray-200">
+        <pre className="mt-1 ml-20 text-[10px] text-th-text-muted bg-th-surface rounded p-2 whitespace-pre-wrap break-all border border-th-border">
           {JSON.stringify(entry, null, 2)}
         </pre>
       )}
@@ -150,17 +150,17 @@ export function JsonlViewer({ sessionId }: { sessionId: string | null }) {
   }, [entries, autoScroll]);
 
   return (
-    <div className="rounded-lg border border-gray-300 bg-white">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200">
-        <span className="text-xs font-medium text-gray-700">JSONL Transcript</span>
-        <span className="text-[11px] text-gray-500 truncate flex-1">{path}</span>
-        <label className="flex items-center gap-1 text-[11px] text-gray-500">
-          <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} className="accent-[var(--th-accent)]" />
+    <div className="rounded-lg border border-th-border bg-th-bg">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-th-border">
+        <span className="text-xs font-medium text-th-text">JSONL Transcript</span>
+        <span className="text-[11px] text-th-text-muted truncate flex-1">{path}</span>
+        <label className="flex items-center gap-1 text-[11px] text-th-text-muted">
+          <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} className="accent-th-accent" />
           Follow
         </label>
-        <span className="text-[11px] text-gray-500">{entries.length}</span>
+        <span className="text-[11px] text-th-text-muted">{entries.length}</span>
       </div>
-      <div className="max-h-[600px] overflow-y-auto font-mono text-[11px] leading-relaxed divide-y divide-gray-100">
+      <div className="max-h-[600px] overflow-y-auto font-mono text-[11px] leading-relaxed divide-y divide-th-border">
         {entries.map((entry, i) => (
           <EntryView key={i} entry={entry} index={i} />
         ))}

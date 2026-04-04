@@ -25,7 +25,7 @@ type PdfDocument = {
 function DownloadLink({ sessionId, filePath, label }: { sessionId: string; filePath: string; label?: string }) {
   const url = getFileUrl(sessionId, filePath);
   return (
-    <a href={url} download={filePath.split("/").pop()} className="text-[var(--th-accent)] hover:text-[var(--th-accent-hover)] text-xs underline underline-offset-2 cursor-pointer">
+    <a href={url} download={filePath.split("/").pop()} className="text-th-accent hover:text-th-accent-hover text-xs underline underline-offset-2 cursor-pointer">
       {label || "Download"}
     </a>
   );
@@ -58,7 +58,7 @@ function SpreadsheetView({ data }: { data: ArrayBuffer }) {
     }
   }, [data]);
 
-  if (sheets.length === 0) return <p className="p-4 text-sm text-gray-500">Could not parse spreadsheet.</p>;
+  if (sheets.length === 0) return <p className="p-4 text-sm text-th-text-muted">Could not parse spreadsheet.</p>;
   const sheet = sheets[activeSheet];
 
   return (
@@ -67,7 +67,7 @@ function SpreadsheetView({ data }: { data: ArrayBuffer }) {
         <div className="flex gap-1 px-4 pt-3 pb-1">
           {sheets.map((s, i) => (
             <button key={s.name} onClick={() => setActiveSheet(i)}
-              className={`rounded px-2.5 py-1 text-xs font-medium cursor-pointer ${i === activeSheet ? "bg-[var(--th-accent)] text-white" : "text-gray-600 hover:bg-gray-100 border border-gray-300"}`}
+              className={`rounded px-2.5 py-1 text-xs font-medium cursor-pointer ${i === activeSheet ? "bg-th-accent text-white" : "text-th-text-muted hover:bg-th-surface-hover border border-th-border"}`}
             >{s.name}</button>
           ))}
         </div>
@@ -76,12 +76,12 @@ function SpreadsheetView({ data }: { data: ArrayBuffer }) {
         <table className="border-collapse text-xs w-full">
           <thead>{sheet.rows.length > 0 && (
             <tr>{sheet.rows[0].map((cell, j) => (
-              <th key={j} className="border border-gray-300 bg-gray-100 px-3 py-1.5 text-left font-medium text-gray-700 whitespace-nowrap">{cell ?? ""}</th>
+              <th key={j} className="border border-th-border bg-th-surface-hover px-3 py-1.5 text-left font-medium text-th-text whitespace-nowrap">{cell ?? ""}</th>
             ))}</tr>
           )}</thead>
           <tbody>{sheet.rows.slice(1).map((row, i) => (
-            <tr key={i} className={i % 2 ? "bg-gray-50" : ""}>
-              {row.map((cell, j) => <td key={j} className="border border-gray-200 px-3 py-1.5 text-gray-800 whitespace-nowrap">{cell ?? ""}</td>)}
+            <tr key={i} className={i % 2 ? "bg-th-surface" : ""}>
+              {row.map((cell, j) => <td key={j} className="border border-th-border px-3 py-1.5 text-th-text whitespace-nowrap">{cell ?? ""}</td>)}
             </tr>
           ))}</tbody>
         </table>
@@ -142,14 +142,14 @@ function PdfView({ url }: { url: string }) {
   }, [currentPage, pageCount]);
 
   if (error) return <p className="p-4 text-sm text-red-600">{error}</p>;
-  if (pageCount === 0) return <p className="p-4 text-sm text-gray-500">Loading PDF...</p>;
+  if (pageCount === 0) return <p className="p-4 text-sm text-th-text-muted">Loading PDF...</p>;
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 px-4 py-1.5 border-b border-gray-100 flex-shrink-0">
-        <button disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)} className="px-2 py-0.5 rounded border border-gray-300 text-xs disabled:opacity-30 cursor-pointer hover:bg-gray-50">\u2190</button>
-        <span className="text-xs text-gray-600">{currentPage} / {pageCount}</span>
-        <button disabled={currentPage >= pageCount} onClick={() => setCurrentPage(p => p + 1)} className="px-2 py-0.5 rounded border border-gray-300 text-xs disabled:opacity-30 cursor-pointer hover:bg-gray-50">\u2192</button>
+      <div className="flex items-center gap-2 px-4 py-1.5 border-b border-th-border flex-shrink-0">
+        <button disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)} className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface">\u2190</button>
+        <span className="text-xs text-th-text-muted">{currentPage} / {pageCount}</span>
+        <button disabled={currentPage >= pageCount} onClick={() => setCurrentPage(p => p + 1)} className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface">\u2192</button>
       </div>
       <div ref={canvasContainerRef} className="flex-1 overflow-auto p-2" />
     </div>
@@ -196,26 +196,26 @@ function ZipView({ data }: { data: ArrayBuffer }) {
     })();
   }, [data]);
 
-  if (files.length === 0) return <p className="p-4 text-sm text-gray-500">Could not read zip contents.</p>;
+  if (files.length === 0) return <p className="p-4 text-sm text-th-text-muted">Could not read zip contents.</p>;
 
   const totalSize = files.reduce((s, f) => s + f.size, 0);
   const fmt = (n: number) => n > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)}MB` : n > 1024 ? `${(n / 1024).toFixed(0)}KB` : `${n}B`;
 
   return (
     <div className="p-4">
-      <p className="text-xs text-gray-500 mb-2">{files.length} files, {fmt(totalSize)} total</p>
+      <p className="text-xs text-th-text-muted mb-2">{files.length} files, {fmt(totalSize)} total</p>
       <table className="border-collapse text-xs w-full">
         <thead>
           <tr>
-            <th className="border border-gray-300 bg-gray-100 px-3 py-1.5 text-left font-medium text-gray-700">Name</th>
-            <th className="border border-gray-300 bg-gray-100 px-3 py-1.5 text-right font-medium text-gray-700 w-20">Size</th>
+            <th className="border border-th-border bg-th-surface-hover px-3 py-1.5 text-left font-medium text-th-text">Name</th>
+            <th className="border border-th-border bg-th-surface-hover px-3 py-1.5 text-right font-medium text-th-text w-20">Size</th>
           </tr>
         </thead>
         <tbody>
           {files.filter(f => !f.name.endsWith("/")).map((f, i) => (
-            <tr key={i} className={i % 2 ? "bg-gray-50" : ""}>
-              <td className="border border-gray-200 px-3 py-1 text-gray-800 font-mono">{f.name}</td>
-              <td className="border border-gray-200 px-3 py-1 text-gray-600 text-right">{fmt(f.size)}</td>
+            <tr key={i} className={i % 2 ? "bg-th-surface" : ""}>
+              <td className="border border-th-border px-3 py-1 text-th-text font-mono">{f.name}</td>
+              <td className="border border-th-border px-3 py-1 text-th-text-muted text-right">{fmt(f.size)}</td>
             </tr>
           ))}
         </tbody>
@@ -258,15 +258,15 @@ export function FileViewer({ sessionId, filePath, onClose, hideHeader }: FileVie
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       {!hideHeader && (
-        <div className="flex items-center gap-3 px-4 py-2 border-b border-gray-200">
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-800 text-sm cursor-pointer">\u2190 Back</button>
-          <h3 className="text-sm font-medium text-gray-800 truncate flex-1">{fileName}</h3>
+        <div className="flex items-center gap-3 px-4 py-2 border-b border-th-border">
+          <button onClick={onClose} className="text-th-text-muted hover:text-th-text text-sm cursor-pointer">\u2190 Back</button>
+          <h3 className="text-sm font-medium text-th-text truncate flex-1">{fileName}</h3>
           <DownloadLink sessionId={sessionId} filePath={filePath} />
         </div>
       )}
       <div className="flex-1 overflow-auto">
         {loading ? (
-          <p className="p-4 text-sm text-gray-500">Loading...</p>
+          <p className="p-4 text-sm text-th-text-muted">Loading...</p>
         ) : isPdf ? (
           <PdfView url={fileUrl} />
         ) : isZip && binaryData ? (
@@ -274,13 +274,13 @@ export function FileViewer({ sessionId, filePath, onClose, hideHeader }: FileVie
         ) : isSpreadsheet && binaryData ? (
           <SpreadsheetView data={binaryData} />
         ) : isImage ? (
-          <div className="p-4"><img src={fileUrl} alt={fileName} className="max-w-full rounded border border-gray-200" /></div>
+          <div className="p-4"><img src={fileUrl} alt={fileName} className="max-w-full rounded border border-th-border" /></div>
         ) : isMd && content !== null ? (
           <MarkdownView content={content} />
         ) : content !== null ? (
-          <pre className="whitespace-pre-wrap p-4 text-xs font-mono text-gray-700">{content}</pre>
+          <pre className="whitespace-pre-wrap p-4 text-xs font-mono text-th-text">{content}</pre>
         ) : (
-          <div className="p-4 text-center text-sm text-gray-500">
+          <div className="p-4 text-center text-sm text-th-text-muted">
             <p className="mb-2">Cannot preview .{ext} files</p>
             <DownloadLink sessionId={sessionId} filePath={filePath} label={`Download ${fileName}`} />
           </div>

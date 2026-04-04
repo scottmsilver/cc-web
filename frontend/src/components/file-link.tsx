@@ -45,7 +45,7 @@ export function FileLink({
         {isLocalFile && onViewFile ? (
           <button
             onClick={() => onViewFile(resolved)}
-            className="text-[var(--th-accent)] hover:text-[var(--th-accent-hover)] text-xs font-mono underline underline-offset-2 cursor-pointer"
+            className="text-th-accent hover:text-th-accent-hover text-xs font-mono underline underline-offset-2 cursor-pointer"
           >
             {filePath}
           </button>
@@ -54,7 +54,7 @@ export function FileLink({
             href={url}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-[var(--th-accent)] hover:text-[var(--th-accent-hover)] text-xs font-mono underline underline-offset-2 cursor-pointer"
+            className="text-th-accent hover:text-th-accent-hover text-xs font-mono underline underline-offset-2 cursor-pointer"
           >
             {filePath}
           </a>
@@ -62,7 +62,7 @@ export function FileLink({
         <a
           href={url}
           download={filePath.split("/").pop()}
-          className="text-gray-300 hover:text-[var(--th-accent)] text-[10px] cursor-pointer ml-0.5"
+          className="text-th-text-faint hover:text-th-accent text-[10px] cursor-pointer ml-0.5"
           title="Download"
         >
           ↓

@@ -37,9 +37,9 @@ export function ProgressEventFeed({ snapshot, className }: ProgressEventFeedProp
 
   return (
     <section className={className}>
-      <div className="rounded-lg border border-gray-300 bg-white">
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200">
-          <span className="text-xs font-medium text-gray-700 mr-1">Events</span>
+      <div className="rounded-lg border border-th-border bg-th-bg">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-th-border">
+          <span className="text-xs font-medium text-th-text mr-1">Events</span>
           {FILTERS.map((item) => {
             const active = item.key === filter;
             return (
@@ -49,30 +49,30 @@ export function ProgressEventFeed({ snapshot, className }: ProgressEventFeedProp
                 onClick={() => setFilter(item.key)}
                 className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
                   active
-                    ? "bg-[var(--th-accent)] text-white"
-                    : "text-gray-600 hover:bg-gray-100"
+                    ? "bg-th-accent text-white"
+                    : "text-th-text-muted hover:bg-th-surface-hover"
                 }`}
               >
                 {item.label}
               </button>
             );
           })}
-          <span className="ml-auto text-[11px] text-gray-500">{filteredEvents.length}/{events.length}</span>
+          <span className="ml-auto text-[11px] text-th-text-muted">{filteredEvents.length}/{events.length}</span>
         </div>
 
-        <div className="divide-y divide-gray-100 max-h-[500px] overflow-y-auto">
+        <div className="divide-y divide-th-border max-h-[500px] overflow-y-auto">
           {filteredEvents.length === 0 ? (
-            <p className="px-3 py-2 text-xs text-gray-500">No events.</p>
+            <p className="px-3 py-2 text-xs text-th-text-muted">No events.</p>
           ) : (
             filteredEvents.map((event: ProgressEventResponse, index) => (
               <div key={`${event.kind}-${index}`} className="flex items-baseline gap-2 px-3 py-1.5 text-xs">
-                <span className="w-14 flex-shrink-0 text-[10px] uppercase tracking-wider text-gray-500 font-medium">
+                <span className="w-14 flex-shrink-0 text-[10px] uppercase tracking-wider text-th-text-muted font-medium">
                   {getProgressEventBadgeText(event)}
                 </span>
-                <span className="text-gray-800 truncate flex-1">
+                <span className="text-th-text truncate flex-1">
                   {getProgressEventPreview(event) || getProgressEventLabel(event)}
                 </span>
-                <span className="text-[10px] text-gray-400 flex-shrink-0">
+                <span className="text-[10px] text-th-text-faint flex-shrink-0">
                   {formatConfidence(event.confidence)}
                 </span>
               </div>

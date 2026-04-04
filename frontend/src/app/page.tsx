@@ -569,7 +569,7 @@ export default function Chat() {
 
   return (
     <div
-      className="flex h-screen flex-col bg-white text-gray-900"
+      className="flex h-screen flex-col bg-th-bg text-th-text"
       onDragOver={(e) => {
         e.preventDefault();
         setUploadDrag(true);
@@ -578,8 +578,8 @@ export default function Chat() {
       onDrop={handleDrop}
     >
       {uploadDrag && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center border-4 border-dashed border-[var(--th-accent)] bg-orange-50">
-          <p className="text-2xl font-semibold text-[var(--th-accent)]">Drop files to upload</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center border-4 border-dashed border-th-accent bg-th-surface">
+          <p className="text-2xl font-semibold text-th-accent">Drop files to upload</p>
         </div>
       )}
 
@@ -592,8 +592,8 @@ export default function Chat() {
       />
 
       {/* Header bar */}
-      <div className="flex items-center border-b border-gray-300 px-4">
-        <h1 className="mr-6 text-sm font-semibold text-[var(--th-accent)]">cchost</h1>
+      <div className="flex items-center border-b border-th-border px-4">
+        <h1 className="mr-6 text-sm font-semibold text-th-accent">cchost</h1>
         <TabBar
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -604,7 +604,7 @@ export default function Chat() {
         <div className="ml-auto flex items-center gap-2">
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs text-gray-700 transition-colors hover:border-[var(--th-accent)] hover:text-[var(--th-accent)]"
+            className="rounded-lg border border-th-border px-3 py-1.5 text-xs text-th-text transition-colors hover:border-th-accent hover:text-th-accent"
           >
             Upload
           </button>
@@ -612,20 +612,20 @@ export default function Chat() {
           <div className="relative">
             <button
               onClick={() => setShowSettings((v) => !v)}
-              className="rounded-lg border border-gray-300 px-2 py-1.5 text-xs text-gray-700 transition-colors hover:border-[var(--th-accent)] hover:text-[var(--th-accent)] cursor-pointer"
+              className="rounded-lg border border-th-border px-2 py-1.5 text-xs text-th-text transition-colors hover:border-th-accent hover:text-th-accent cursor-pointer"
               title="Settings"
             >
               ⚙
             </button>
             {showSettings && (
-              <div className="absolute right-0 top-full z-40 mt-1 w-48 rounded-lg border border-gray-200 bg-white shadow-lg p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-2">Theme</p>
+              <div className="absolute right-0 top-full z-40 mt-1 w-48 rounded-lg border border-th-border bg-th-bg shadow-lg p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-th-text-muted mb-2">Theme</p>
                 {themes.map((t) => (
                   <button
                     key={t.id}
                     onClick={() => { setThemeId(t.id); applyTheme(t); setShowSettings(false); }}
                     className={`w-full text-left px-2 py-1.5 rounded text-xs cursor-pointer ${
-                      themeId === t.id ? "bg-orange-50 text-[var(--th-accent)] font-medium" : "text-gray-700 hover:bg-gray-50"
+                      themeId === t.id ? "bg-th-surface text-th-accent font-medium" : "text-th-text hover:bg-th-surface"
                     }`}
                   >
                     {t.name}
@@ -737,18 +737,18 @@ export default function Chat() {
 
         {activeTab === "files" && (
           <div className="flex flex-1 min-h-0">
-            <div className="w-72 overflow-y-auto border-r border-gray-300 p-3 flex-shrink-0">
-              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-gray-600">Files</h3>
+            <div className="w-72 overflow-y-auto border-r border-th-border p-3 flex-shrink-0">
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-th-text-muted">Files</h3>
               {!activeSession ? (
-                <p className="text-xs text-gray-600">Send a message to create a session</p>
+                <p className="text-xs text-th-text-muted">Send a message to create a session</p>
               ) : files.length === 0 ? (
-                <p className="text-xs text-gray-600">No files yet. Upload or ask Claude to create some.</p>
+                <p className="text-xs text-th-text-muted">No files yet. Upload or ask Claude to create some.</p>
               ) : (
                 files.map((file) => (
                   <div
                     key={file}
                     className={`flex cursor-pointer items-center gap-1 truncate rounded px-2 py-1.5 text-xs font-mono ${
-                      viewingFile === file ? "bg-gray-100 text-[var(--th-accent)]" : "text-gray-600 hover:bg-gray-50"
+                      viewingFile === file ? "bg-th-surface-hover text-th-accent" : "text-th-text-muted hover:bg-th-surface"
                     }`}
                   >
                     <button
@@ -760,7 +760,7 @@ export default function Chat() {
                     <button
                       onClick={() => downloadFile(file)}
                       title="Download"
-                      className="flex-shrink-0 text-gray-600 hover:text-[var(--th-accent)]"
+                      className="flex-shrink-0 text-th-text-muted hover:text-th-accent"
                     >
                       ↓
                     </button>
@@ -776,7 +776,7 @@ export default function Chat() {
               />
             ) : (
               <div className="flex-1 flex items-center justify-center">
-                <p className="text-sm text-gray-600">Click a file to view.</p>
+                <p className="text-sm text-th-text-muted">Click a file to view.</p>
               </div>
             )}
           </div>
@@ -796,7 +796,7 @@ export default function Chat() {
 
         {activeTab === "artifacts" && (!activeSession || files.length === 0) && (
           <div className="flex flex-1 items-center justify-center">
-            <p className="text-sm text-gray-500">No artifacts yet. Start a session and Claude will create files.</p>
+            <p className="text-sm text-th-text-muted">No artifacts yet. Start a session and Claude will create files.</p>
           </div>
         )}
 
@@ -808,7 +808,7 @@ export default function Chat() {
               </div>
             ) : (
               <div className="flex h-full items-center justify-center">
-                <p className="text-sm text-gray-600">No activity yet. Send a message to start a run.</p>
+                <p className="text-sm text-th-text-muted">No activity yet. Send a message to start a run.</p>
               </div>
             )}
           </div>

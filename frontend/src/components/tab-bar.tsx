@@ -22,8 +22,8 @@ function TabButton({
       onClick={onClick}
       className={`px-4 py-3 text-sm font-medium ${
         active
-          ? "border-b-2 border-[var(--th-accent)] text-[var(--th-accent)]"
-          : "text-gray-700 hover:text-gray-900"
+          ? "border-b-2 border-th-accent text-th-accent"
+          : "text-th-text hover:text-th-text"
       }`}
     >
       {tab.label}{tab.badge ?? ""}

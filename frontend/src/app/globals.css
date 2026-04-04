@@ -22,6 +22,22 @@
 @theme inline {
   --color-background: var(--th-bg);
   --color-foreground: var(--th-text);
+  --color-th-bg: var(--th-bg);
+  --color-th-surface: var(--th-surface);
+  --color-th-surface-hover: var(--th-surface-hover);
+  --color-th-border: var(--th-border);
+  --color-th-text: var(--th-text);
+  --color-th-text-muted: var(--th-text-muted);
+  --color-th-text-faint: var(--th-text-faint);
+  --color-th-accent: var(--th-accent);
+  --color-th-accent-hover: var(--th-accent-hover);
+  --color-th-user-bubble: var(--th-user-bubble);
+  --color-th-user-bubble-border: var(--th-user-bubble-border);
+  --color-th-assistant-bubble: var(--th-assistant-bubble);
+  --color-th-code-bg: var(--th-code-bg);
+  --color-th-code-text: var(--th-code-text);
+  --color-th-term-bg: var(--th-term-bg);
+  --color-th-term-text: var(--th-term-text);
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
 }

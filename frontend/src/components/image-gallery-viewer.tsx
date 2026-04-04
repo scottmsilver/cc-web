@@ -26,27 +26,27 @@ export function ImageGalleryViewer({
   }, [index, images.length, onClose]);
 
   return (
-    <div className="flex flex-col h-full border-l border-gray-200 overflow-hidden">
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-gray-200 bg-gray-50 flex-shrink-0">
+    <div className="flex flex-col h-full border-l border-th-border overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-th-border bg-th-surface flex-shrink-0">
         <button
           disabled={index <= 0}
           onClick={() => setIndex(i => i - 1)}
-          className="px-2 py-0.5 rounded border border-gray-300 text-xs disabled:opacity-30 cursor-pointer hover:bg-gray-100"
+          className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface-hover"
         >←</button>
-        <span className="text-xs text-gray-600 flex-1 text-center">Page {index + 1} of {images.length}</span>
+        <span className="text-xs text-th-text-muted flex-1 text-center">Page {index + 1} of {images.length}</span>
         <button
           disabled={index >= images.length - 1}
           onClick={() => setIndex(i => i + 1)}
-          className="px-2 py-0.5 rounded border border-gray-300 text-xs disabled:opacity-30 cursor-pointer hover:bg-gray-100"
+          className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface-hover"
         >→</button>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-sm cursor-pointer ml-1" title="Close">✕</button>
+        <button onClick={onClose} className="text-th-text-faint hover:text-th-text text-sm cursor-pointer ml-1" title="Close">✕</button>
       </div>
-      <div className="flex-1 overflow-auto p-2 flex items-start justify-center bg-gray-50">
+      <div className="flex-1 overflow-auto p-2 flex items-start justify-center bg-th-surface">
         <img src={images[index]} alt={`Page ${index + 1}`} className="max-w-full rounded shadow-sm" />
       </div>
       {/* Thumbnail strip */}
       {images.length > 1 && (
-        <div className="flex-shrink-0 border-t border-gray-200 overflow-x-auto px-2 py-1.5 bg-white">
+        <div className="flex-shrink-0 border-t border-th-border overflow-x-auto px-2 py-1.5 bg-th-bg">
           <div className="flex gap-1">
             {images.map((src, i) => (
               <img
@@ -54,7 +54,7 @@ export function ImageGalleryViewer({
                 src={src}
                 alt={`Thumb ${i + 1}`}
                 className={`h-12 rounded cursor-pointer flex-shrink-0 border-2 transition-colors ${
-                  i === index ? "border-[var(--th-accent)]" : "border-transparent hover:border-gray-300"
+                  i === index ? "border-th-accent" : "border-transparent hover:border-th-border"
                 }`}
                 onClick={() => setIndex(i)}
               />

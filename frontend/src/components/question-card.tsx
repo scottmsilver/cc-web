@@ -22,7 +22,7 @@ export function QuestionCard({ run, onAnswer, className }: QuestionCardProps) {
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-widest text-amber-700">Question</p>
-            <h3 className="mt-1 text-lg font-semibold text-gray-900">
+            <h3 className="mt-1 text-lg font-semibold text-th-text">
               {question?.question || "Waiting for a response"}
             </h3>
           </div>
@@ -37,7 +37,7 @@ export function QuestionCard({ run, onAnswer, className }: QuestionCardProps) {
               The model is waiting for input, but no answer options were provided.
             </p>
           ) : !onAnswer ? (
-            <p className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-600">
+            <p className="rounded-lg border border-dashed border-th-border bg-th-surface px-4 py-3 text-sm text-th-text-muted">
               Answer buttons are read-only until an answer handler is connected.
             </p>
           ) : (
@@ -46,15 +46,15 @@ export function QuestionCard({ run, onAnswer, className }: QuestionCardProps) {
                 key={option.index}
                 type="button"
                 onClick={() => onAnswer(option.index)}
-                className="flex w-full items-center justify-between gap-3 rounded-lg border border-gray-300 bg-white px-4 py-3 text-left transition hover:border-[var(--th-accent)] hover:bg-orange-50"
+                className="flex w-full items-center justify-between gap-3 rounded-lg border border-th-border bg-th-bg px-4 py-3 text-left transition hover:border-th-accent hover:bg-th-surface"
               >
                 <span className="min-w-0">
-                  <span className="block text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+                  <span className="block text-[11px] font-semibold uppercase tracking-wider text-th-text-muted">
                     Option {option.index}
                   </span>
-                  <span className="mt-1 block text-sm text-gray-800">{option.label}</span>
+                  <span className="mt-1 block text-sm text-th-text">{option.label}</span>
                 </span>
-                <span className="shrink-0 rounded-full border border-[var(--th-accent)] bg-orange-50 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wider text-[var(--th-accent)]">
+                <span className="shrink-0 rounded-full border border-th-accent bg-th-surface px-2.5 py-1 text-[11px] font-medium uppercase tracking-wider text-th-accent">
                   Send
                 </span>
               </button>

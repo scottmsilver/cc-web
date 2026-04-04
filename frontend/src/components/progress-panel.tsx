@@ -24,15 +24,15 @@ type ProgressPanelProps = {
 
 function RawJsonBlock({ progress }: { progress: ProgressResponse }) {
   return (
-    <details className="group rounded-xl border border-gray-300 bg-white p-4">
-      <summary className="cursor-pointer list-none text-sm font-medium text-gray-700">
+    <details className="group rounded-xl border border-th-border bg-th-bg p-4">
+      <summary className="cursor-pointer list-none text-sm font-medium text-th-text">
         <span className="flex items-center justify-between gap-3">
           <span>Raw JSON</span>
-          <span className="text-xs text-gray-500 group-open:hidden">Expand</span>
-          <span className="hidden text-xs text-gray-500 group-open:inline">Collapse</span>
+          <span className="text-xs text-th-text-muted group-open:hidden">Expand</span>
+          <span className="hidden text-xs text-th-text-muted group-open:inline">Collapse</span>
         </span>
       </summary>
-      <pre className="mt-4 overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-4 text-xs leading-5 text-gray-700">
+      <pre className="mt-4 overflow-auto rounded-lg border border-th-border bg-th-surface p-4 text-xs leading-5 text-th-text">
         {JSON.stringify(progress, null, 2)}
       </pre>
     </details>
@@ -53,11 +53,11 @@ function StatusBlock({
   const pillLabel = getProgressRunStatusText(run);
 
   return (
-    <div className="rounded-xl border border-gray-300 bg-white p-5">
+    <div className="rounded-xl border border-th-border bg-th-bg p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-500">Current activity</p>
-          <h2 className="mt-2 text-xl font-semibold text-gray-900">{summary.activityText}</h2>
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-th-text-muted">Current activity</p>
+          <h2 className="mt-2 text-xl font-semibold text-th-text">{summary.activityText}</h2>
         </div>
         <div
           className={[
@@ -68,7 +68,7 @@ function StatusBlock({
                 ? "border border-amber-300 bg-amber-50 text-amber-700"
                 : pillTone === "success"
                   ? "border border-green-300 bg-green-50 text-green-700"
-                  : "border border-gray-300 bg-gray-50 text-gray-700",
+                  : "border border-th-border bg-th-surface text-th-text",
           ].join(" ")}
         >
           {pillLabel}
@@ -76,19 +76,19 @@ function StatusBlock({
       </div>
 
       <div className="mt-5 grid gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Primary label</p>
-          <p className="mt-2 text-sm text-gray-800">{summary.primaryLabelText}</p>
+        <div className="rounded-lg border border-th-border bg-th-surface p-4">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-th-text-muted">Primary label</p>
+          <p className="mt-2 text-sm text-th-text">{summary.primaryLabelText}</p>
         </div>
-        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Confidence</p>
-          <p className="mt-2 text-sm text-gray-800">
+        <div className="rounded-lg border border-th-border bg-th-surface p-4">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-th-text-muted">Confidence</p>
+          <p className="mt-2 text-sm text-th-text">
             {formatConfidence(snapshot.primary_confidence)} {snapshot.primary_label ? `(${snapshot.primary_label_source})` : ""}
           </p>
         </div>
-        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Background</p>
-          <p className="mt-2 text-sm text-gray-800">{formatBackgroundCount(snapshot.background_count)}</p>
+        <div className="rounded-lg border border-th-border bg-th-surface p-4">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-th-text-muted">Background</p>
+          <p className="mt-2 text-sm text-th-text">{formatBackgroundCount(snapshot.background_count)}</p>
         </div>
       </div>
 

@@ -175,7 +175,7 @@ export function ChatInput({
 
   return (
     <div
-      className={`border-t border-gray-300 ${dragOver ? "bg-orange-50 border-[var(--th-accent)]/50" : ""}`}
+      className={`border-t border-th-border ${dragOver ? "bg-th-surface border-th-accent/50" : ""}`}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
@@ -205,7 +205,7 @@ export function ChatInput({
               {f.status !== "uploading" && (
                 <button
                   onClick={() => removeFile(f.originalName)}
-                  className="hover:text-[var(--th-accent)] ml-0.5"
+                  className="hover:text-th-accent ml-0.5"
                 >
                   \u00D7
                 </button>
@@ -228,11 +228,11 @@ export function ChatInput({
           }}
         />
 
-        <div className="relative flex flex-1 items-center bg-white border border-gray-300 rounded-xl px-2 focus-within:border-[var(--th-accent)]/50 focus-within:ring-1 focus-within:ring-[var(--th-accent)]/20 transition-all">
+        <div className="relative flex flex-1 items-center bg-th-bg border border-th-border rounded-xl px-2 focus-within:border-th-accent/50 focus-within:ring-1 focus-within:ring-th-accent/20 transition-all">
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center justify-center w-8 h-8 rounded-full text-gray-700 hover:text-[var(--th-accent)] hover:bg-gray-100 transition-colors flex-shrink-0 text-lg font-light"
+            className="flex items-center justify-center w-8 h-8 rounded-full text-th-text hover:text-th-accent hover:bg-th-surface-hover transition-colors flex-shrink-0 text-lg font-light"
             title="Attach files"
           >
             +
@@ -268,12 +268,12 @@ export function ChatInput({
                   : "Message Claude Code... (type @ to reference files)"
             }
             disabled={disabled || !allUploaded}
-            className="flex-1 bg-transparent px-2 py-2.5 text-sm text-gray-900 focus:outline-none placeholder-gray-500 disabled:opacity-50"
+            className="flex-1 bg-transparent px-2 py-2.5 text-sm text-th-text focus:outline-none placeholder-th-text-muted disabled:opacity-50"
           />
           <button
             type="submit"
             disabled={disabled || !allUploaded || (!input.trim() && uploadedFiles.length === 0)}
-            className="flex items-center justify-center w-8 h-8 rounded-lg bg-[var(--th-accent)] hover:bg-[var(--th-accent-hover)] disabled:bg-gray-200 disabled:text-gray-600 text-white transition-colors disabled:cursor-not-allowed flex-shrink-0 mr-1"
+            className="flex items-center justify-center w-8 h-8 rounded-lg bg-th-accent hover:bg-th-accent-hover disabled:bg-th-surface-hover disabled:text-th-text-muted text-white transition-colors disabled:cursor-not-allowed flex-shrink-0 mr-1"
           >
             ↑
           </button>
@@ -282,9 +282,9 @@ export function ChatInput({
           {showAtMenu && filteredFiles.length > 0 && (
             <div
               data-at-menu
-              className="absolute bottom-full left-0 mb-1 w-80 max-h-48 overflow-y-auto rounded-lg border border-gray-300 bg-white shadow-lg z-50"
+              className="absolute bottom-full left-0 mb-1 w-80 max-h-48 overflow-y-auto rounded-lg border border-th-border bg-th-bg shadow-lg z-50"
             >
-              <div className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-gray-500 border-b border-gray-200">
+              <div className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-th-text-muted border-b border-th-border">
                 Files in session
               </div>
               {filteredFiles.map((file) => (
@@ -292,7 +292,7 @@ export function ChatInput({
                   key={file}
                   type="button"
                   onClick={() => insertAtReference(file)}
-                  className="w-full px-3 py-2 text-left text-sm text-gray-800 hover:bg-orange-50 hover:text-[var(--th-accent)] font-mono truncate"
+                  className="w-full px-3 py-2 text-left text-sm text-th-text hover:bg-th-surface hover:text-th-accent font-mono truncate"
                 >
                   {file}
                 </button>
@@ -303,8 +303,8 @@ export function ChatInput({
       </form>
 
       {dragOver && (
-        <div className="absolute inset-0 bg-orange-50 border-2 border-dashed border-[var(--th-accent)]/50 rounded-xl flex items-center justify-center pointer-events-none z-10">
-          <p className="text-[var(--th-accent)] font-medium">Drop files here</p>
+        <div className="absolute inset-0 bg-th-surface border-2 border-dashed border-th-accent/50 rounded-xl flex items-center justify-center pointer-events-none z-10">
+          <p className="text-th-accent font-medium">Drop files here</p>
         </div>
       )}
     </div>
