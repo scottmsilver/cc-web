@@ -305,7 +305,7 @@ function UserEntry({ entry, onViewImages }: { entry: JsonlEntry; onViewImages?: 
 }
 
 /* ── Main ── */
-export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingMessage, isWorking }: { sessionId: string | null; files: string[]; onViewFile?: (path: string) => void; onViewImages?: (images: string[], startIndex: number) => void; pendingMessage?: string | null; isWorking?: boolean }) {
+export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingMessage, isWorking, refreshKey = 0 }: { sessionId: string | null; files: string[]; onViewFile?: (path: string) => void; onViewImages?: (images: string[], startIndex: number) => void; pendingMessage?: string | null; isWorking?: boolean; refreshKey?: number }) {
   const [entries, setEntries] = useState<JsonlEntry[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLElement | null>(null);
@@ -327,7 +327,7 @@ export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingM
     void load();
     const id = setInterval(() => void load(), 3000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [sessionId]);
+  }, [sessionId, refreshKey]);
 
   // Find the scroll container (closest ancestor with overflow scroll/auto)
   useEffect(() => {

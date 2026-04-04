@@ -146,6 +146,7 @@ export default function Chat() {
   const [progress, setProgress] = useState<ProgressResponse | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [commandResult, setCommandResult] = useState<string | null>(null);
+  const [jsonlRefreshKey, setJsonlRefreshKey] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handledRunIdsRef = useRef<Set<string>>(new Set());
   const pollFailureCountRef = useRef(0);
@@ -451,7 +452,8 @@ export default function Chat() {
         const sessionId = await ensureSession();
         const result = await apiRunSlashCommand(sessionId, message);
         if (result.type === "overlay") {
-          // Result persisted to sidecar — will appear in chat on next JSONL poll
+          // Trigger immediate JSONL refresh so result appears without poll delay
+          setJsonlRefreshKey((k) => k + 1);
         } else if (result.type === "response") {
           // It produced a normal response — will appear in JSONL polling
           // Trigger a progress refresh
@@ -692,6 +694,7 @@ export default function Chat() {
                   onViewImages={(images, index) => { setViewingFile(null); setViewingImages({ images, index }); }}
                   pendingMessage={pendingMessage}
                   isWorking={isLoading}
+                  refreshKey={jsonlRefreshKey}
                 />
 
                 {progress?.pending_question && (
