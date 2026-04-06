@@ -62,6 +62,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from google_routes import router as google_router
+
+app.include_router(google_router)
+
 
 class CreateSessionRequest(BaseModel):
     session_id: str
@@ -215,6 +219,18 @@ class RunManager:
 
     def release_session_slot(self, session_id: str) -> None:
         with self._lock:
+            self._session_slots.discard(session_id)
+
+    def interrupt_session(self, session_id: str) -> None:
+        """Mark any active run for this session as interrupted and release the slot."""
+        with self._lock:
+            run_id = self._session_runs.get(session_id)
+            if run_id:
+                run = self._runs.get(run_id)
+                if run is not None and _is_active_run(run):
+                    run.status = "error"
+                    run.error = "Interrupted by user"
+                    run.finished_at = _utcnow_iso()
             self._session_slots.discard(session_id)
 
     def clear_progress_history(self, session_id: str) -> None:
@@ -465,6 +481,17 @@ def destroy_session(session_id: str):
         return {"status": "destroyed"}
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
+
+
+@app.post("/api/sessions/{session_id}/interrupt")
+def interrupt_session(session_id: str):
+    session = _get_session_or_404(session_id)
+    try:
+        session.send_keys("Escape")
+        run_manager.interrupt_session(session_id)
+        return {"status": "interrupted"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/sessions/{session_id}/runs", response_model=RunResponse)

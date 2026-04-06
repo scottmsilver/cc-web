@@ -92,11 +92,12 @@ function WebLinks({ text }: { text: string }) {
 }
 
 /* ── Tool result (open by default, click to collapse) ── */
-function ToolResult({ block }: { block: ContentBlock }) {
+function ToolResult({ block, onViewImages }: { block: ContentBlock; onViewImages?: (images: string[], startIndex: number) => void }) {
   const [open, setOpen] = useState(true);
   const content = block.content;
   let text = "";
   let isJson = false;
+  const inlineImages: string[] = [];
 
   if (typeof content === "string") {
     text = content;
@@ -106,11 +107,20 @@ function ToolResult({ block }: { block: ContentBlock }) {
       if (c && typeof c === "object" && "type" in c) {
         const ct = (c as { type: string }).type;
         if (ct === "tool_reference") return null;
-        if (ct === "image") { text = "(image)"; break; }
+        if (ct === "image") {
+          const src = (c as { source?: { media_type?: string; data?: string } }).source;
+          if (src?.data && src?.media_type) {
+            inlineImages.push(`data:${src.media_type};base64,${src.data}`);
+          }
+        }
       }
     }
-    // If no text found, show raw JSON
-    if (!text && content.length > 0) {
+    // If we found images but no text, show images only
+    if (!text && inlineImages.length > 0) {
+      text = "";
+    }
+    // If no text and no images, show raw JSON
+    if (!text && inlineImages.length === 0 && content.length > 0) {
       text = JSON.stringify(content, null, 2);
       isJson = true;
     }
@@ -119,7 +129,7 @@ function ToolResult({ block }: { block: ContentBlock }) {
     isJson = true;
   }
 
-  if (!text) return null;
+  if (!text && inlineImages.length === 0) return null;
 
   // Check for web search results with links
   const hasLinks = text.includes("Links: [");
@@ -131,11 +141,22 @@ function ToolResult({ block }: { block: ContentBlock }) {
         className={`text-[11px] cursor-pointer hover:text-th-text ${open ? "" : "truncate max-h-5 overflow-hidden"}`}
         onClick={() => setOpen(!open)}
       >
-        {!open && <span className="font-mono text-th-text-muted">{headerLine.substring(0, 100)}</span>}
+        {!open && <span className="font-mono text-th-text-muted">{inlineImages.length > 0 ? `(${inlineImages.length} page${inlineImages.length !== 1 ? "s" : ""})` : headerLine.substring(0, 100)}</span>}
       </div>
       {open && (
         <div>
-          {hasLinks ? (
+          {inlineImages.length > 0 && (
+            <div className="py-1 overflow-x-auto">
+              <div className="flex gap-2">
+                {inlineImages.map((src, i) => (
+                  <img key={i} src={src} alt={`Page ${i + 1}`} className="h-32 rounded border border-th-border flex-shrink-0 cursor-pointer hover:border-th-accent hover:shadow-md transition-shadow"
+                    onClick={() => onViewImages?.(inlineImages, i)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          {text && (hasLinks ? (
             <div className="text-[11px] text-th-text-muted">
               <span className="font-mono">{headerLine}</span>
               <WebLinks text={text} />
@@ -144,7 +165,7 @@ function ToolResult({ block }: { block: ContentBlock }) {
             <pre className={`text-[11px] font-mono text-th-text-muted whitespace-pre-wrap break-all max-h-48 overflow-y-auto ${isJson ? "bg-th-surface rounded p-1.5" : ""}`}>
               {text.substring(0, 500)}{text.length > 500 ? "..." : ""}
             </pre>
-          )}
+          ))}
         </div>
       )}
     </div>
@@ -283,7 +304,16 @@ function UserEntry({ entry, onViewImages }: { entry: JsonlEntry; onViewImages?: 
       const b = block as ContentBlock;
       if (b.type === "text" && b.text?.trim()) textParts.push(b.text);
       else if (b.type === "tool_result") resultBlocks.push(b);
-      else if (b.type === "image" || b.type === "document") imageBlocks.push(b);
+      else if (b.type === "image") imageBlocks.push(b);
+      else if (b.type === "document") {
+        // PDF documents can't render as <img> — skip them (they're already shown as file links)
+        const src = (b as unknown as { source?: { media_type?: string } }).source;
+        if (src?.media_type && !src.media_type.startsWith("image/")) {
+          // Non-image document (PDF, etc.) — skip, already visible via tool_result
+        } else {
+          imageBlocks.push(b);
+        }
+      }
     }
   }
 
@@ -298,7 +328,7 @@ function UserEntry({ entry, onViewImages }: { entry: JsonlEntry; onViewImages?: 
           <div className="max-w-[75%] rounded-2xl bg-th-user-bubble border border-th-user-bubble-border px-4 py-2.5 text-sm text-th-text">{text}</div>
         </div>
       )}
-      {resultBlocks.map((b, j) => <ToolResult key={`r-${j}`} block={b} />)}
+      {resultBlocks.map((b, j) => <ToolResult key={`r-${j}`} block={b} onViewImages={onViewImages} />)}
       {imageBlocks.length > 0 && <ImageStrip blocks={imageBlocks} onViewImages={onViewImages} />}
     </div>
   );

@@ -13,6 +13,7 @@ import { JsonlChat } from "@/components/jsonl-chat";
 import { PendingQuestionCard } from "@/components/pending-question-card";
 import { QuestionCard } from "@/components/question-card";
 import { TerminalView } from "@/components/terminal-view";
+import { InboxTab } from "@/components/inbox-tab";
 import { SessionSelector } from "@/components/session-selector";
 import { TabBar, type TabId } from "@/components/tab-bar";
 import { isBinaryFile } from "@/lib/config";
@@ -140,6 +141,7 @@ export default function Chat() {
   const [viewingFile, setViewingFile] = useState<string | null>(null);
   const [viewingImages, setViewingImages] = useState<{ images: string[]; index: number } | null>(null);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
+  const [draftInput, setDraftInput] = useState("");
   const [themeId, setThemeId] = useState("light");
   const [showSettings, setShowSettings] = useState(false);
   const [uploadDrag, setUploadDrag] = useState(false);
@@ -209,7 +211,7 @@ export default function Chat() {
       setActiveSession(sessionParam);
       activeSessionRef.current = sessionParam;
     }
-    if (tabParam === "files" || tabParam === "debug" || tabParam === "terminal") {
+    if (tabParam === "inbox" || tabParam === "files" || tabParam === "debug" || tabParam === "terminal") {
       setActiveTab(tabParam);
     }
     urlInitializedRef.current = true;
@@ -690,7 +692,7 @@ export default function Chat() {
                 <JsonlChat
                   sessionId={activeSession}
                   files={files}
-                  onViewFile={(path) => { setViewingImages(null); setViewingFile(path); }}
+                  onViewFile={(path) => { setViewingImages(null); setViewingFile((prev) => prev === path ? null : path); }}
                   onViewImages={(images, index) => { setViewingFile(null); setViewingImages({ images, index }); }}
                   pendingMessage={pendingMessage}
                   isWorking={isLoading}
@@ -727,12 +729,37 @@ export default function Chat() {
                 </div>
               )}
               <ChatInput
-                onSend={(msg) => { setSendError(null); sendMessage(msg); }}
-                disabled={isLoading}
+                onSend={(msg) => {
+                  setSendError(null);
+                  if (isLoading && activeSession) {
+                    // Interrupt current run, then send new message to same session
+                    void import("@/lib/api").then(({ interruptSession }) =>
+                      interruptSession(activeSession).then(() => {
+                        setIsLoading(false);
+                        setActiveRunId(null);
+                        // Wait for Claude Code to settle after Escape, then send
+                        setTimeout(() => sendMessage(msg), 1500);
+                      })
+                    );
+                  } else {
+                    sendMessage(msg);
+                  }
+                }}
+                disabled={false}
                 sessionId={activeSession}
                 ensureSession={ensureSession}
                 onFilesUploaded={() => { const sid = activeSessionRef.current; if (sid) void fetchFiles(sid); }}
                 sessionFiles={files}
+                isWorking={isLoading}
+                externalInput={draftInput}
+                onInputChange={setDraftInput}
+                onInterrupt={() => {
+                  if (activeSession) {
+                    void import("@/lib/api").then(({ interruptSession }) =>
+                      interruptSession(activeSession).then(() => setIsLoading(false))
+                    );
+                  }
+                }}
               />
             </div>
           );
@@ -764,6 +791,25 @@ export default function Chat() {
           );
         })()}
 
+        {activeTab === "inbox" && (
+          <InboxTab
+            onAnalyzeComplete={(sessionId, runId) => {
+              activeSessionRef.current = sessionId;
+              setActiveSession(sessionId);
+              setSessions((prev) => {
+                if (prev.some((s) => s.id === sessionId)) return prev;
+                return [{ id: sessionId }, ...prev];
+              });
+              handledRunIdsRef.current.delete(runId);
+              pollFailureCountRef.current = 0;
+              setActiveRunId(runId);
+              setPendingMessage("/invoice:analyzer — analyzing draw request from Gmail...");
+              setIsLoading(true);
+              setActiveTab("chat");
+            }}
+          />
+        )}
+
         {activeTab === "files" && (
           <div className="flex flex-1 min-h-0">
             <div className="w-72 overflow-y-auto border-r border-th-border p-3 flex-shrink-0">
@@ -781,7 +827,7 @@ export default function Chat() {
                     }`}
                   >
                     <button
-                      onClick={() => setViewingFile(file)}
+                      onClick={() => setViewingFile((prev) => prev === file ? null : file)}
                       className="flex-1 truncate text-left"
                     >
                       {file}

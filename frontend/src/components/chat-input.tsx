@@ -17,6 +17,10 @@ export function ChatInput({
   onFilesUploaded,
   ensureSession,
   sessionFiles,
+  isWorking,
+  onInterrupt,
+  externalInput,
+  onInputChange,
 }: {
   onSend: (message: string) => void;
   disabled: boolean;
@@ -24,8 +28,17 @@ export function ChatInput({
   onFilesUploaded?: (files: string[]) => void;
   ensureSession?: () => Promise<string>;
   sessionFiles?: string[];
+  isWorking?: boolean;
+  onInterrupt?: () => void;
+  externalInput?: string;
+  onInputChange?: (value: string) => void;
 }) {
-  const [input, setInput] = useState("");
+  const [localInput, setLocalInput] = useState("");
+  const input = externalInput !== undefined ? externalInput : localInput;
+  const setInput = (v: string) => {
+    if (onInputChange) onInputChange(v);
+    else setLocalInput(v);
+  };
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [showAtMenu, setShowAtMenu] = useState(false);
@@ -319,6 +332,11 @@ export function ChatInput({
                   return;
                 }
               }
+              if (e.key === "Escape" && isWorking && onInterrupt) {
+                e.preventDefault();
+                onInterrupt();
+                return;
+              }
               if (e.key === "Enter" && !e.shiftKey && !showAtMenu && !showSlashMenu) {
                 e.preventDefault();
                 const form = e.currentTarget.closest("form");
@@ -328,6 +346,8 @@ export function ChatInput({
             placeholder={
               !allUploaded
                 ? "Uploading files..."
+                : isWorking
+                  ? "Type to interrupt, or press Escape to stop..."
                 : uploadedFiles.length > 0
                   ? `Message about ${uploadedFiles.length} file(s)... (type @ to reference files)`
                   : "Message Claude Code... (type @ to reference files)"
@@ -335,13 +355,25 @@ export function ChatInput({
             disabled={disabled || !allUploaded}
             className="flex-1 bg-transparent px-2 py-2.5 text-sm text-th-text focus:outline-none placeholder-th-text-muted disabled:opacity-50"
           />
-          <button
-            type="submit"
-            disabled={disabled || !allUploaded || (!input.trim() && uploadedFiles.length === 0)}
-            className="flex items-center justify-center w-8 h-8 rounded-lg bg-th-accent hover:bg-th-accent-hover disabled:bg-th-surface-hover disabled:text-th-text-muted text-white transition-colors disabled:cursor-not-allowed flex-shrink-0 mr-1"
-          >
-            ↑
-          </button>
+          {isWorking && !input.trim() ? (
+            <button
+              type="button"
+              onClick={onInterrupt}
+              className="flex items-center justify-center w-8 h-8 rounded-lg bg-red-600 hover:bg-red-500 text-white transition-colors flex-shrink-0 mr-1"
+              title="Stop (Escape)"
+            >
+              ■
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={disabled || !allUploaded || (!input.trim() && uploadedFiles.length === 0)}
+              className="flex items-center justify-center w-8 h-8 rounded-lg bg-th-accent hover:bg-th-accent-hover disabled:bg-th-surface-hover disabled:text-th-text-muted text-white transition-colors disabled:cursor-not-allowed flex-shrink-0 mr-1"
+            >
+              ↑
+            </button>
+          )}
+
 
           {/* @ autocomplete dropdown */}
           {showAtMenu && filteredFiles.length > 0 && (

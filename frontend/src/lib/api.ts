@@ -2,6 +2,16 @@ import { CCHOST_API } from "@/lib/config";
 import type { ProgressResponse, RunResponse } from "@/lib/progress";
 import type { JsonlEntry } from "@/lib/types";
 
+export type GmailThread = {
+  id: string;
+  subject: string;
+  sender: string;
+  date: string;
+  message_count: number;
+  attachment_count: number;
+  analyzed: boolean;
+};
+
 // ── Sessions ──
 
 export async function fetchSessions(): Promise<unknown[]> {
@@ -62,6 +72,14 @@ export async function startRun(
   });
   if (!res.ok) throw new Error(`Failed to start run: HTTP ${res.status}`);
   return (await res.json()) as RunResponse;
+}
+
+// ── Interrupt ──
+
+export async function interruptSession(sessionId: string): Promise<void> {
+  await fetch(`${CCHOST_API}/api/sessions/${sessionId}/interrupt`, {
+    method: "POST",
+  });
 }
 
 // ── Questions ──
@@ -216,6 +234,46 @@ export async function runSlashCommand(
     body: JSON.stringify({ command }),
   });
   if (!res.ok) throw new Error(`Command failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+// ── Gmail / Inbox ──
+
+export async function fetchGmailStatus(): Promise<{ connected: boolean; email?: string }> {
+  const res = await fetch(`${CCHOST_API}/api/auth/google/status`);
+  if (!res.ok) return { connected: false };
+  return res.json();
+}
+
+export function getGmailAuthUrl(): string {
+  return `${CCHOST_API}/api/auth/google`;
+}
+
+export async function scanGmail(query?: string): Promise<GmailThread[]> {
+  const res = await fetch(`${CCHOST_API}/api/gmail/scan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: query || "has:attachment newer_than:90d" }),
+  });
+  if (!res.ok) throw new Error(`Scan failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function analyzeThread(threadId: string): Promise<{ session_id: string; run_id: string }> {
+  const res = await fetch(`${CCHOST_API}/api/inbox/analyze/${threadId}`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Analyze failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function createGmailDraft(sessionId: string, threadId: string): Promise<{ draft_id: string }> {
+  const res = await fetch(`${CCHOST_API}/api/sessions/${sessionId}/gmail/draft`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ thread_id: threadId }),
+  });
+  if (!res.ok) throw new Error(`Draft failed: HTTP ${res.status}`);
   return res.json();
 }
 
