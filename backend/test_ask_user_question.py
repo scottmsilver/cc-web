@@ -12,12 +12,12 @@ We test this by asking Claude to use AskUserQuestion explicitly,
 then programmatically answering it.
 """
 
-import json
 import os
 import shutil
+import tempfile
 import time
 
-from cchost import CCHost, Response
+from cchost import CCHost
 
 
 def test_detect_question():
@@ -26,7 +26,7 @@ def test_detect_question():
     shutil.rmtree(workdir, ignore_errors=True)
     os.makedirs(workdir, exist_ok=True)
 
-    host = CCHost()
+    host = CCHost(manifest_path=os.path.join(tempfile.mkdtemp(), "sessions.json"))
     session = host.create("ask-test", working_dir=workdir)
     print("Session ready")
 
@@ -122,7 +122,7 @@ def test_question_in_workflow():
     os.makedirs(workdir, exist_ok=True)
 
     # Create a dummy PDF so the analyzer has something to look at
-    host = CCHost()
+    host = CCHost(manifest_path=os.path.join(tempfile.mkdtemp(), "sessions.json"))
     session = host.create("ask-workflow", working_dir=workdir)
     print("Session ready")
 

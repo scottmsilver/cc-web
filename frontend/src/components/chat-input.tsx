@@ -10,6 +10,13 @@ type UploadedFile = {
   status: "uploading" | "uploaded" | "error";
 };
 
+export type GmailDownload = {
+  threadId: string;
+  threadSubject: string;
+  status: "downloading" | "downloaded" | "error";
+  files?: string[];
+};
+
 export function ChatInput({
   onSend,
   disabled,
@@ -21,6 +28,10 @@ export function ChatInput({
   onInterrupt,
   externalInput,
   onInputChange,
+  onGmailPickerToggle,
+  showGmailPicker,
+  gmailDownloads,
+  onRemoveGmailDownload,
 }: {
   onSend: (message: string) => void;
   disabled: boolean;
@@ -32,6 +43,10 @@ export function ChatInput({
   onInterrupt?: () => void;
   externalInput?: string;
   onInputChange?: (value: string) => void;
+  onGmailPickerToggle?: (show: boolean) => void;
+  showGmailPicker?: boolean;
+  gmailDownloads?: GmailDownload[];
+  onRemoveGmailDownload?: (threadId: string) => void;
 }) {
   const [localInput, setLocalInput] = useState("");
   const input = externalInput !== undefined ? externalInput : localInput;
@@ -44,15 +59,17 @@ export function ChatInput({
   const [showAtMenu, setShowAtMenu] = useState(false);
   const [atFilter, setAtFilter] = useState("");
   const [atCursorPos, setAtCursorPos] = useState(0);
+  const [showPlusMenu, setShowPlusMenu] = useState(false);
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [slashFilter, setSlashFilter] = useState("");
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
   const [slashHighlight, setSlashHighlight] = useState(0);
   const slashCommandsCacheRef = useRef<SlashCommand[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const textInputRef = useRef<HTMLInputElement>(null);
+  const textInputRef = useRef<HTMLTextAreaElement>(null);
 
-  const allUploaded = uploadedFiles.length === 0 || uploadedFiles.every((f) => f.status === "uploaded");
+  const allUploaded = (uploadedFiles.length === 0 || uploadedFiles.every((f) => f.status === "uploaded"))
+    && (!gmailDownloads || gmailDownloads.every((d) => d.status !== "downloading"));
 
   // Upload a single file immediately
   const uploadFileImmediately = async (file: File) => {
@@ -135,6 +152,7 @@ export function ChatInput({
       setInput("");
       setUploadedFiles([]);
       setShowAtMenu(false);
+      if (textInputRef.current) textInputRef.current.style.height = "auto";
     }
   };
 
@@ -158,6 +176,8 @@ export function ChatInput({
       setAtFilter(atMatch[1].toLowerCase());
       setAtCursorPos(cursorPos);
       setShowSlashMenu(false);
+      setShowPlusMenu(false);
+      if (showGmailPicker) onGmailPickerToggle?.(false);
     } else {
       setShowAtMenu(false);
     }
@@ -168,6 +188,8 @@ export function ChatInput({
       const filter = slashMatch[1].toLowerCase();
       setSlashFilter(filter);
       setSlashHighlight(0);
+      setShowPlusMenu(false);
+      if (showGmailPicker) onGmailPickerToggle?.(false);
       // Lazy-load commands
       if (slashCommandsCacheRef.current) {
         setSlashCommands(slashCommandsCacheRef.current);
@@ -221,9 +243,10 @@ export function ChatInput({
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
-      if (!target.closest("[data-at-menu]") && !target.closest("[data-slash-menu]") && !target.closest("input[type=text]")) {
+      if (!target.closest("[data-at-menu]") && !target.closest("[data-slash-menu]") && !target.closest("[data-plus-menu]") && !target.closest("input[type=text]")) {
         setShowAtMenu(false);
         setShowSlashMenu(false);
+        setShowPlusMenu(false);
       }
     };
     document.addEventListener("mousedown", handleClick);
@@ -237,9 +260,41 @@ export function ChatInput({
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
     >
-      {/* Uploaded file chips */}
-      {uploadedFiles.length > 0 && (
+      {/* File chips (uploads + gmail downloads) */}
+      {(uploadedFiles.length > 0 || (gmailDownloads && gmailDownloads.length > 0)) && (
         <div className="px-4 pt-3 flex flex-wrap gap-2">
+          {/* Gmail download chips */}
+          {gmailDownloads?.map((d) => (
+            <span
+              key={d.threadSubject}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border ${
+                d.status === "downloading"
+                  ? "bg-th-warning-bg border-th-warning-border text-th-warning-text"
+                  : d.status === "error"
+                    ? "bg-th-error-bg border-th-error-text/30 text-th-error-text"
+                    : "bg-th-success-bg border-th-success-text/30 text-th-success-text"
+              }`}
+            >
+              <span>
+                {d.status === "downloading" ? "\u23F3" : d.status === "error" ? "\u26A0" : "\u2713"}
+              </span>
+              <span className="max-w-[250px] truncate">
+                {d.status === "downloaded" && d.files
+                  ? `${d.files.length} file${d.files.length !== 1 ? "s" : ""} from "${d.threadSubject}"`
+                  : d.status === "downloading"
+                    ? `Downloading "${d.threadSubject}"...`
+                    : d.threadSubject}
+              </span>
+              {d.status !== "downloading" && (
+                <button
+                  onClick={() => onRemoveGmailDownload?.(d.threadId)}
+                  className="hover:text-th-accent ml-0.5"
+                >
+                  ×
+                </button>
+              )}
+            </span>
+          ))}
           {uploadedFiles.map((f) => (
             <span
               key={f.originalName}
@@ -285,20 +340,54 @@ export function ChatInput({
           }}
         />
 
-        <div className="relative flex flex-1 items-center bg-th-bg border border-th-border rounded-xl px-2 focus-within:border-th-accent/50 focus-within:ring-1 focus-within:ring-th-accent/20 transition-all">
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="flex items-center justify-center w-8 h-8 rounded-full text-th-text hover:text-th-accent hover:bg-th-surface-hover transition-colors flex-shrink-0 text-lg font-light"
-            title="Attach files"
-          >
-            +
-          </button>
-          <input
+        <div className="relative flex flex-1 items-end bg-th-bg border border-th-border rounded-xl px-2 focus-within:border-th-accent/50 focus-within:ring-1 focus-within:ring-th-accent/20 transition-all">
+          <div className="relative mb-1" data-plus-menu>
+            <button
+              type="button"
+              onClick={() => {
+                setShowPlusMenu((prev) => !prev);
+                setShowAtMenu(false);
+                setShowSlashMenu(false);
+                if (showGmailPicker) onGmailPickerToggle?.(false);
+              }}
+              className="flex items-center justify-center w-8 h-8 rounded-full text-th-text hover:text-th-accent hover:bg-th-surface-hover transition-colors flex-shrink-0 text-lg font-light"
+              title="Attach files"
+            >
+              +
+            </button>
+            {showPlusMenu && (
+              <div className="absolute bottom-full left-0 mb-1 w-44 rounded-lg border border-th-border bg-th-bg shadow-lg z-50">
+                <button
+                  type="button"
+                  onClick={() => { setShowPlusMenu(false); fileInputRef.current?.click(); }}
+                  className="w-full px-3 py-2 text-left text-sm text-th-text hover:bg-th-surface hover:text-th-accent"
+                >
+                  From computer
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPlusMenu(false);
+                    setShowAtMenu(false);
+                    setShowSlashMenu(false);
+                    onGmailPickerToggle?.(!showGmailPicker);
+                  }}
+                  className="w-full px-3 py-2 text-left text-sm text-th-text hover:bg-th-surface hover:text-th-accent"
+                >
+                  From Gmail
+                </button>
+              </div>
+            )}
+          </div>
+          <textarea
             ref={textInputRef}
-            type="text"
             value={input}
-            onChange={(e) => handleInputChange(e.target.value)}
+            onChange={(e) => {
+              handleInputChange(e.target.value);
+              // Auto-resize
+              e.target.style.height = "auto";
+              e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px";
+            }}
             onKeyDown={(e) => {
               if (showAtMenu && filteredFiles.length > 0) {
                 if (e.key === "Tab" || e.key === "Enter") {
@@ -343,6 +432,7 @@ export function ChatInput({
                 form?.requestSubmit();
               }
             }}
+            rows={1}
             placeholder={
               !allUploaded
                 ? "Uploading files..."
@@ -353,7 +443,7 @@ export function ChatInput({
                   : "Message Claude Code... (type @ to reference files)"
             }
             disabled={disabled || !allUploaded}
-            className="flex-1 bg-transparent px-2 py-2.5 text-sm text-th-text focus:outline-none placeholder-th-text-muted disabled:opacity-50"
+            className="flex-1 bg-transparent px-2 py-2.5 text-sm text-th-text focus:outline-none placeholder-th-text-muted disabled:opacity-50 resize-none overflow-hidden"
           />
           {isWorking && !input.trim() ? (
             <button

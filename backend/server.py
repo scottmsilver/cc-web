@@ -51,13 +51,13 @@ app = FastAPI(title="cchost", description="Claude Code as a hosted service")
 
 _cors_origins = os.environ.get(
     "CCHOST_CORS_ORIGINS",
-    "http://localhost:3000,http://localhost:3001",
+    "*",
 ).split(",")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -447,7 +447,7 @@ def list_sessions():
             SessionInfo(
                 id=s.id,
                 working_dir=s.working_dir,
-                state="active",
+                state="dormant" if s.is_dormant else "active",
                 created_at=s.created_at.isoformat(),
                 title=summary.get("title", ""),
                 status=summary.get("status", ""),
@@ -459,12 +459,13 @@ def list_sessions():
 @app.get("/api/sessions/{session_id}", response_model=SessionInfo)
 def get_session(session_id: str):
     try:
+        # Note: get() triggers lazy resume for dormant sessions
         s = host.get(session_id)
         summary = s.summary()
         return SessionInfo(
             id=s.id,
             working_dir=s.working_dir,
-            state="active",
+            state="dormant" if s.is_dormant else "active",
             created_at=s.created_at.isoformat(),
             title=summary.get("title", ""),
             status=summary.get("status", ""),
@@ -598,6 +599,70 @@ def btw(session_id: str, req: BtwRequest):
         raise HTTPException(status_code=409, detail=str(e))
 
 
+@app.get("/api/sessions/{session_id}/gmail/suggestions")
+def gmail_suggestions(session_id: str):
+    """Return Gmail search suggestions. Returns cache, kicks off background generation if stale."""
+    session = _get_session_or_404(session_id)
+    import json as _json
+
+    cache_path = os.path.join(session.working_dir, "suggested-searches.json")
+    # Return cache if available
+    try:
+        with open(cache_path) as f:
+            data = _json.load(f)
+        if data.get("suggestions"):
+            return {"suggestions": data["suggestions"]}
+    except (FileNotFoundError, _json.JSONDecodeError):
+        pass
+
+    # No cache yet — the background summary cycle will generate it within ~60s
+    return {"suggestions": [], "generating": True}
+
+
+@app.get("/api/sessions/{session_id}/gmail/suggestions/debug")
+def gmail_suggestions_debug(session_id: str):
+    """Debug: synchronously generate suggestions and return diagnostics."""
+    session = _get_session_or_404(session_id)
+    diag = {"idle": False, "btw_response": None, "error": None, "suggestions": []}
+    try:
+        diag["idle"] = session._is_tmux_idle()
+        # Don't gate on idle — btw() handles its own lock
+        response = session.btw(
+            "Based on our conversation, suggest 3 Gmail searches. "
+            'Respond ONLY with JSON: {"suggestions": [{"label": "Topic Name", "query": "subject:topic"}]}'
+        )
+        diag["btw_response"] = response[:500] if response else None
+        if response:
+            import json as _json
+
+            flat = " ".join(response.split())
+            candidates = []
+            depth = 0
+            obj_start = -1
+            for i, ch in enumerate(flat):
+                if ch == "{":
+                    if depth == 0:
+                        obj_start = i
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0 and obj_start >= 0:
+                        candidates.append(flat[obj_start : i + 1])
+                        obj_start = -1
+            diag["json_candidates"] = len(candidates)
+            for candidate in reversed(candidates):
+                try:
+                    parsed = _json.loads(candidate)
+                    if parsed.get("suggestions"):
+                        diag["suggestions"] = parsed["suggestions"]
+                        break
+                except _json.JSONDecodeError:
+                    pass
+    except Exception as e:
+        diag["error"] = str(e)
+    return diag
+
+
 @app.post("/api/sessions/{session_id}/refresh-summary")
 def refresh_summary(session_id: str):
     """Trigger a single session's summary refresh (calls /btw in background)."""
@@ -661,6 +726,38 @@ def download_file(session_id: str, path: str):
         return HTTPResponse(content=data, media_type=media_type)
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/sessions/{session_id}/gmail/download/{thread_id}")
+def remove_downloaded_thread(session_id: str, thread_id: str):
+    """Remove downloaded Gmail thread attachments and clean up gmail-source.json."""
+    session = _get_session_or_404(session_id)
+    import json
+    import shutil
+
+    # Remove the inbox/{thread_id}/ directory (path traversal protection)
+    inbox_dir = os.path.join(session.working_dir, "inbox", thread_id)
+    resolved = os.path.realpath(inbox_dir)
+    if not resolved.startswith(os.path.realpath(session.working_dir) + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid thread_id")
+    if os.path.isdir(resolved):
+        shutil.rmtree(resolved)
+
+    # Remove this thread from gmail-source.json
+    source_path = os.path.join(session.working_dir, "gmail-source.json")
+    try:
+        with open(source_path) as f:
+            source = json.load(f)
+        source["thread_ids"] = [t for t in source.get("thread_ids", []) if t != thread_id]
+        if source["thread_ids"]:
+            with open(source_path, "w") as f:
+                json.dump(source, f, indent=2)
+        else:
+            os.remove(source_path)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    return {"status": "removed"}
 
 
 _MAX_UPLOAD_BYTES = int(os.environ.get("CCHOST_MAX_UPLOAD_BYTES", 100 * 1024 * 1024))  # 100 MB
@@ -782,8 +879,15 @@ def _background_summary_refresh():
         time.sleep(60)
         try:
             for session in host.list():
+                # Skip sessions that aren't idle — don't block on active work
+                if not session._is_tmux_idle():
+                    continue
                 try:
                     session.generate_summary()
+                except Exception:
+                    pass
+                try:
+                    session.generate_gmail_suggestions()
                 except Exception:
                     pass
         except Exception:

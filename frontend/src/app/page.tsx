@@ -13,11 +13,15 @@ import { JsonlChat } from "@/components/jsonl-chat";
 import { PendingQuestionCard } from "@/components/pending-question-card";
 import { QuestionCard } from "@/components/question-card";
 import { TerminalView } from "@/components/terminal-view";
-import { InboxTab } from "@/components/inbox-tab";
+import { GmailPicker, type SelectedThread, type SuggestedSearch } from "@/components/gmail-picker";
+import type { GmailDownload } from "@/components/chat-input";
+import { DraftExportButtons } from "@/components/draft-export-buttons";
 import { SessionSelector } from "@/components/session-selector";
 import { TabBar, type TabId } from "@/components/tab-bar";
 import { isBinaryFile } from "@/lib/config";
+import { CCHOST_API } from "@/lib/config";
 import {
+  fetchGmailStatus,
   fetchSessions as apiFetchSessions,
   createSession as apiCreateSession,
   deleteSession as apiDeleteSession,
@@ -145,6 +149,12 @@ export default function Chat() {
   const [themeId, setThemeId] = useState("light");
   const [showSettings, setShowSettings] = useState(false);
   const [uploadDrag, setUploadDrag] = useState(false);
+  const [showGmailPicker, setShowGmailPicker] = useState(false);
+  const [gmailThreadIds, setGmailThreadIds] = useState<string[]>([]);
+  const [gmailConnected, setGmailConnected] = useState(false);
+  const [gmailDownloads, setGmailDownloads] = useState<GmailDownload[]>([]);
+  const [gmailSuggestions, setGmailSuggestions] = useState<SuggestedSearch[]>([]);
+  const [gmailSuggestionsLoading, setGmailSuggestionsLoading] = useState(false);
   const [progress, setProgress] = useState<ProgressResponse | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [commandResult, setCommandResult] = useState<string | null>(null);
@@ -202,6 +212,39 @@ export default function Chat() {
     applyTheme(getTheme(saved));
   }, []);
 
+  // Check Gmail connection status on mount
+  useEffect(() => {
+    void fetchGmailStatus().then((status) => setGmailConnected(status.connected)).catch(() => {});
+  }, []);
+
+  // Fetch Gmail suggestions when picker opens. Polls if backend is still generating.
+  useEffect(() => {
+    if (!showGmailPicker || !activeSession) return;
+    let cancelled = false;
+    let retries = 0;
+    const fetchSuggestions = () => {
+      void fetch(`${CCHOST_API}/api/sessions/${activeSession}/gmail/suggestions`)
+        .then((res) => res.ok ? res.json() : null)
+        .then((data) => {
+          if (cancelled) return;
+          if (data?.suggestions?.length) {
+            setGmailSuggestions(data.suggestions);
+            setGmailSuggestionsLoading(false);
+          } else if (data?.generating && retries < 6) {
+            setGmailSuggestionsLoading(true);
+            retries++;
+            setTimeout(fetchSuggestions, 5000);
+          } else {
+            setGmailSuggestionsLoading(false);
+          }
+        })
+        .catch(() => { if (!cancelled) setGmailSuggestionsLoading(false); });
+    };
+    setGmailSuggestionsLoading(true);
+    fetchSuggestions();
+    return () => { cancelled = true; };
+  }, [showGmailPicker, activeSession]);
+
   // Read URL params on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -211,8 +254,14 @@ export default function Chat() {
       setActiveSession(sessionParam);
       activeSessionRef.current = sessionParam;
     }
-    if (tabParam === "inbox" || tabParam === "files" || tabParam === "debug" || tabParam === "terminal") {
+    if (tabParam === "files" || tabParam === "debug" || tabParam === "terminal") {
       setActiveTab(tabParam);
+    }
+    if (params.get("gmail_connected") === "true") {
+      setShowGmailPicker(true);
+      params.delete("gmail_connected");
+      const qs = params.toString();
+      window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
     }
     urlInitializedRef.current = true;
   }, []);
@@ -247,6 +296,9 @@ export default function Chat() {
     }
 
     setIsAnswering(false);
+    setGmailSuggestions([]);
+    setGmailDownloads([]);
+    setShowGmailPicker(false);
 
     if (skipConversationLoadForSessionRef.current === activeSession) {
       skipConversationLoadForSessionRef.current = null;
@@ -588,6 +640,49 @@ export default function Chat() {
     }
   };
 
+  const handleGmailSelect = async (selectedThreads: SelectedThread[]) => {
+    const sid = activeSessionRef.current || (await ensureSession());
+
+    // Merge new selections into existing downloads (don't replace)
+    setGmailDownloads((prev) => {
+      const existingIds = new Set(prev.map((d) => d.threadId));
+      const newEntries = selectedThreads
+        .filter((t) => !existingIds.has(t.id))
+        .map((t) => ({ threadId: t.id, threadSubject: t.subject, status: "downloading" as const }));
+      return [...prev, ...newEntries];
+    });
+    setGmailThreadIds(selectedThreads.map((t) => t.id));
+
+    // Download each thread's attachments async
+    for (const thread of selectedThreads) {
+      try {
+        const res = await fetch(
+          `${CCHOST_API}/api/sessions/${sid}/gmail/download/${thread.id}`,
+          { method: "POST", headers: { "Content-Type": "application/json" } },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as { files: string[] };
+
+        setGmailDownloads((prev) =>
+          prev.map((d) =>
+            d.threadId === thread.id
+              ? { ...d, status: "downloaded" as const, files: data.files }
+              : d,
+          ),
+        );
+        void fetchFiles(sid);
+      } catch {
+        setGmailDownloads((prev) =>
+          prev.map((d) =>
+            d.threadId === thread.id
+              ? { ...d, status: "error" as const }
+              : d,
+          ),
+        );
+      }
+    }
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setUploadDrag(false);
@@ -676,7 +771,7 @@ export default function Chat() {
           <SessionSelector
             sessions={sessions}
             activeSession={activeSession}
-            onSelectSession={(id) => { setActiveSession(id); setActiveTab("chat"); }}
+            onSelectSession={(id) => { setActiveSession(id); setActiveRunId(null); setIsLoading(false); setActiveTab("chat"); }}
             onNewSession={startNewSessionDraft}
             onDeleteSession={deleteSession}
           />
@@ -728,17 +823,52 @@ export default function Chat() {
                   <button onClick={() => setSendError(null)} className="ml-3 text-th-error-text hover:opacity-70">✕</button>
                 </div>
               )}
+              {activeSession && (
+                <DraftExportButtons
+                  sessionId={activeSession}
+                  sessionFiles={files}
+                  gmailConnected={gmailConnected}
+                />
+              )}
+              {showGmailPicker && (
+                <div className="px-3 pb-2 flex-shrink-0">
+                  <GmailPicker
+                    sessionId={activeSession}
+                    sessionFiles={files}
+                    suggestions={gmailSuggestions}
+                    suggestionsLoading={gmailSuggestionsLoading}
+                    ensureSession={ensureSession}
+                    onSelect={(threads) => void handleGmailSelect(threads)}
+                    onClose={() => setShowGmailPicker(false)}
+                    onGmailConnected={() => setGmailConnected(true)}
+                  />
+                </div>
+              )}
               <ChatInput
+                showGmailPicker={showGmailPicker}
+                onGmailPickerToggle={setShowGmailPicker}
+                gmailDownloads={gmailDownloads}
+                onRemoveGmailDownload={(threadId) => {
+                  setGmailDownloads((prev) => prev.filter((d) => d.threadId !== threadId));
+                  const sid = activeSessionRef.current;
+                  if (sid) {
+                    void fetch(`${CCHOST_API}/api/sessions/${sid}/gmail/download/${threadId}`, { method: "DELETE" });
+                  }
+                }}
                 onSend={(msg) => {
                   setSendError(null);
+                  // Always try to send directly. If a run is active, interrupt first.
                   if (isLoading && activeSession) {
-                    // Interrupt current run, then send new message to same session
                     void import("@/lib/api").then(({ interruptSession }) =>
                       interruptSession(activeSession).then(() => {
                         setIsLoading(false);
                         setActiveRunId(null);
-                        // Wait for Claude Code to settle after Escape, then send
                         setTimeout(() => sendMessage(msg), 1500);
+                      }).catch(() => {
+                        // Interrupt failed (maybe no active run) — just send directly
+                        setIsLoading(false);
+                        setActiveRunId(null);
+                        sendMessage(msg);
                       })
                     );
                   } else {
@@ -790,25 +920,6 @@ export default function Chat() {
             />
           );
         })()}
-
-        {activeTab === "inbox" && (
-          <InboxTab
-            onAnalyzeComplete={(sessionId, runId) => {
-              activeSessionRef.current = sessionId;
-              setActiveSession(sessionId);
-              setSessions((prev) => {
-                if (prev.some((s) => s.id === sessionId)) return prev;
-                return [{ id: sessionId }, ...prev];
-              });
-              handledRunIdsRef.current.delete(runId);
-              pollFailureCountRef.current = 0;
-              setActiveRunId(runId);
-              setPendingMessage("/invoice:analyzer — analyzing draw request from Gmail...");
-              setIsLoading(true);
-              setActiveTab("chat");
-            }}
-          />
-        )}
 
         {activeTab === "files" && (
           <div className="flex flex-1 min-h-0">

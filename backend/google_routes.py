@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 import google_service
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from googleapiclient.errors import HttpError
 from pydantic import BaseModel, Field
@@ -47,8 +47,38 @@ _FRONTEND_URL = os.environ.get("CCHOST_FRONTEND_URL", "http://localhost:3000")
 _API_BASE_URL = os.environ.get("CCHOST_API_URL", "http://localhost:8420")
 _REDIRECT_URI = f"{_API_BASE_URL}/api/auth/google/callback"
 
+
+def _infer_scheme(request) -> str:
+    """Infer the external scheme. Tailscale serve terminates TLS without setting x-forwarded-proto."""
+    if request.headers.get("x-forwarded-proto"):
+        return request.headers["x-forwarded-proto"]
+    host = request.headers.get("host", "")
+    port = host.split(":")[-1] if ":" in host else ""
+    # Tailscale serve uses ports 443, 8443, 10000 for HTTPS
+    if port in ("443", "8443", "10000") or ".ts.net" in host:
+        return "https"
+    return "http"
+
+
+def _dynamic_redirect_uri(request) -> str:
+    """Build redirect URI from the incoming request's Host header."""
+    host = request.headers.get("host", "localhost:8420")
+    scheme = _infer_scheme(request)
+    return f"{scheme}://{host}/api/auth/google/callback"
+
+
+def _dynamic_frontend_url(request) -> str:
+    """Build frontend URL from the incoming request's Host header."""
+    host = request.headers.get("host", "localhost:3000")
+    hostname = host.split(":")[0]
+    scheme = _infer_scheme(request)
+    if scheme == "https":
+        return os.environ.get("CCHOST_FRONTEND_URL", f"https://{hostname}")
+    return os.environ.get("CCHOST_FRONTEND_URL", f"{scheme}://{hostname}:3000")
+
+
 _CCHOST_DIR = os.path.join(Path.home(), ".cchost")
-_ANALYZED_THREADS_PATH = os.path.join(_CCHOST_DIR, "analyzed-threads.json")
+_DOWNLOADED_THREADS_PATH = os.path.join(_CCHOST_DIR, "downloaded-threads.json")
 
 
 # ---------------------------------------------------------------------------
@@ -56,19 +86,19 @@ _ANALYZED_THREADS_PATH = os.path.join(_CCHOST_DIR, "analyzed-threads.json")
 # ---------------------------------------------------------------------------
 
 
-def _load_analyzed_threads() -> dict:
-    """Load the analyzed-threads.json tracking file."""
+def _load_downloaded_threads() -> dict:
+    """Load the downloaded-threads.json tracking file."""
     try:
-        with open(_ANALYZED_THREADS_PATH) as f:
+        with open(_DOWNLOADED_THREADS_PATH) as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 
-def _save_analyzed_threads(data: dict) -> None:
-    """Save the analyzed-threads.json tracking file."""
+def _save_downloaded_threads(data: dict) -> None:
+    """Save the downloaded-threads.json tracking file."""
     os.makedirs(_CCHOST_DIR, exist_ok=True)
-    with open(_ANALYZED_THREADS_PATH, "w") as f:
+    with open(_DOWNLOADED_THREADS_PATH, "w") as f:
         json.dump(data, f, indent=2)
 
 
@@ -117,7 +147,7 @@ class ThreadSummary(BaseModel):
     date: str = ""
     message_count: int = 1
     attachment_count: int = 0
-    analyzed: bool = False
+    downloaded: bool = False
 
 
 class SearchThreadSummary(BaseModel):
@@ -188,10 +218,11 @@ def _extract_attachment_parts(payload: dict) -> list[dict]:
 
 
 @router.get("/api/auth/google")
-def google_oauth_start():
+def google_oauth_start(request: Request):
     """Generate OAuth URL and redirect browser to Google consent screen."""
     try:
-        flow = google_service.get_oauth_flow(_REDIRECT_URI)
+        redirect_uri = _dynamic_redirect_uri(request)
+        flow = google_service.get_oauth_flow(redirect_uri)
         auth_url, _ = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
@@ -208,23 +239,25 @@ def google_oauth_start():
 
 
 @router.get("/api/auth/google/callback")
-def google_oauth_callback(code: Optional[str] = None, error: Optional[str] = None):
+def google_oauth_callback(request: Request, code: Optional[str] = None, error: Optional[str] = None):
     """Exchange auth code for tokens, save, redirect to frontend."""
+    frontend_url = _dynamic_frontend_url(request)
     if error:
-        return RedirectResponse(url=f"{_FRONTEND_URL}?tab=inbox&gmail_error={error}")
+        return RedirectResponse(url=f"{frontend_url}?gmail_error={error}")
 
     if not code:
-        return RedirectResponse(url=f"{_FRONTEND_URL}?tab=inbox&gmail_error=no_code")
+        return RedirectResponse(url=f"{frontend_url}?gmail_error=no_code")
 
     try:
-        flow = google_service.get_oauth_flow(_REDIRECT_URI)
+        redirect_uri = _dynamic_redirect_uri(request)
+        flow = google_service.get_oauth_flow(redirect_uri)
         credentials = google_service.exchange_code(flow, code)
         tm = google_service.TokenManager()
         tm.save(credentials)
-        return RedirectResponse(url=f"{_FRONTEND_URL}?tab=inbox")
+        return RedirectResponse(url=f"{frontend_url}?gmail_connected=true")
     except Exception as exc:
         logger.exception("OAuth callback error")
-        return RedirectResponse(url=f"{_FRONTEND_URL}?tab=inbox&gmail_error={str(exc)[:200]}")
+        return RedirectResponse(url=f"{frontend_url}?gmail_error={str(exc)[:200]}")
 
 
 @router.get("/api/auth/google/status")
@@ -261,7 +294,7 @@ def gmail_scan(req: GmailScanRequest):
     if not messages:
         return []
 
-    analyzed = _load_analyzed_threads()
+    downloaded = _load_downloaded_threads()
 
     # Group messages by thread, fetch first message of each thread for metadata
     seen_threads: dict[str, dict] = {}
@@ -300,7 +333,7 @@ def gmail_scan(req: GmailScanRequest):
             date=_get_header(headers, "Date"),
             message_count=len(thread_messages),
             attachment_count=total_attachments,
-            analyzed=thread_id in analyzed,
+            downloaded=thread_id in downloaded,
         )
 
     return list(seen_threads.values())
@@ -372,10 +405,10 @@ def analyze_thread(thread_id: str):
     os.makedirs(inbox_dir, exist_ok=True)
     _download_thread_attachments(creds, thread_id, inbox_dir)
 
-    # 3. Mark thread as analyzed
-    analyzed = _load_analyzed_threads()
-    analyzed[thread_id] = {"session_id": session_id, "analyzed_at": _utcnow_iso()}
-    _save_analyzed_threads(analyzed)
+    # 3. Mark thread as downloaded
+    downloaded = _load_downloaded_threads()
+    downloaded[thread_id] = {"session_id": session_id, "downloaded_at": _utcnow_iso()}
+    _save_downloaded_threads(downloaded)
 
     # 4. Start the analyzer run
     run = run_manager.create_run(session_id)
@@ -416,10 +449,46 @@ def download_thread_attachments(session_id: str, thread_id: str):
 
     files = _download_thread_attachments(creds, thread_id, inbox_dir)
 
-    # Mark thread as analyzed
-    analyzed = _load_analyzed_threads()
-    analyzed[thread_id] = {"session_id": session_id, "analyzed_at": _utcnow_iso()}
-    _save_analyzed_threads(analyzed)
+    # Write gmail-source.json for downstream draft threading
+    gmail = google_service.build_gmail_service(creds)
+    thread_data = _gmail_api_call(
+        lambda: gmail.users()
+        .threads()
+        .get(
+            userId="me",
+            id=thread_id,
+            format="metadata",
+            metadataHeaders=["From"],
+        )
+        .execute()
+    )
+    sender = ""
+    for msg in thread_data.get("messages", [])[:1]:
+        sender = _get_header(msg.get("payload", {}).get("headers", []), "From")
+
+    source_path = os.path.join(session.working_dir, "gmail-source.json")
+    # Merge with existing gmail-source.json (may have multiple thread selections)
+    existing_source: dict = {}
+    try:
+        with open(source_path) as f:
+            existing_source = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    existing_ids = existing_source.get("thread_ids", [])
+    if thread_id not in existing_ids:
+        existing_ids.append(thread_id)
+    existing_source["thread_ids"] = existing_ids
+    if sender:
+        existing_source["sender"] = sender
+
+    with open(source_path, "w") as f:
+        json.dump(existing_source, f, indent=2)
+
+    # Mark thread as downloaded
+    downloaded = _load_downloaded_threads()
+    downloaded[thread_id] = {"session_id": session_id, "downloaded_at": _utcnow_iso()}
+    _save_downloaded_threads(downloaded)
 
     return DownloadResponse(files=files)
 
@@ -444,9 +513,19 @@ def create_gmail_draft(session_id: str, req: GmailDraftRequest):
             detail="No email file found (expected *_draw_email.md or email_to_gc.txt)",
         )
 
-    # Get the original thread to extract reply metadata
     gmail = google_service.build_gmail_service(creds)
 
+    # If no thread_id, create an unthreaded draft
+    if not req.thread_id:
+        mime_msg = MIMEText(email_text)
+        mime_msg["subject"] = "Invoice Review"
+        raw = base64.urlsafe_b64encode(mime_msg.as_bytes()).decode()
+        draft = _gmail_api_call(
+            lambda: gmail.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
+        )
+        return DraftResponse(draft_id=draft["id"], message="Draft created (not threaded)")
+
+    # Get the original thread to extract reply metadata
     thread = _gmail_api_call(
         lambda: gmail.users()
         .threads()

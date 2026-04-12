@@ -88,6 +88,7 @@ class CCSession:
     _jsonl_path: Optional[str] = field(default=None, repr=False)
     _last_line_count: int = field(default=0, repr=False)
     _tmux_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _claude_session_id: Optional[str] = field(default=None, repr=False)
 
     @property
     def _project_slug(self) -> str:
@@ -99,7 +100,17 @@ class CCSession:
         if os.path.isdir(project_dir):
             files = glob.glob(os.path.join(project_dir, "*.jsonl"))
             if files:
-                return max(files, key=os.path.getmtime)
+                best = max(files, key=os.path.getmtime)
+                # Extract Claude session ID from filename (UUID.jsonl)
+                basename = os.path.basename(best)
+                if basename.endswith(".jsonl"):
+                    new_id = basename[:-6]
+                    if new_id != self._claude_session_id:
+                        self._claude_session_id = new_id
+                        # Persist updated session ID to manifest
+                        if self._host is not None:
+                            self._host._save_manifest()
+                return best
         return None
 
     def _ensure_jsonl_path(self) -> Optional[str]:
@@ -216,17 +227,18 @@ class CCSession:
             return "\n".join(parts)
         return ""
 
-    def _wait_for_ready(self, timeout: int = 30) -> None:
+    def _wait_for_ready(self, timeout: int = 30, is_resume: bool = False) -> None:
         """Wait for Claude Code to start and accept the trust prompt."""
-        # Clean up old JSONL files from previous sessions in the same workdir
-        project_dir = os.path.expanduser(f"~/.claude/projects/-{self._project_slug}")
-        if os.path.isdir(project_dir):
-            old_files = glob.glob(os.path.join(project_dir, "*.jsonl"))
-            for f in old_files:
-                try:
-                    os.remove(f)
-                except OSError:
-                    pass
+        # Clean up old JSONL files — but NOT when resuming (--resume needs them)
+        if not is_resume:
+            project_dir = os.path.expanduser(f"~/.claude/projects/-{self._project_slug}")
+            if os.path.isdir(project_dir):
+                old_files = glob.glob(os.path.join(project_dir, "*.jsonl"))
+                for f in old_files:
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
 
         # Wait for tmux pane to have content
         pane = self._tmux_session.active_window.active_pane
@@ -254,6 +266,8 @@ class CCSession:
 
     def _tmux_shows_question(self) -> bool:
         """Check if the tmux screen is showing an AskUserQuestion (boolean only)."""
+        if self._tmux_session is None:
+            return False
         try:
             pane = self._tmux_session.active_window.active_pane
             captured = pane.capture_pane(start=-15)
@@ -442,8 +456,15 @@ class CCSession:
         """Return whether Claude is currently showing an AskUserQuestion prompt."""
         return self._tmux_shows_question()
 
+    @property
+    def is_dormant(self) -> bool:
+        """True if session exists in manifest but has no live tmux process."""
+        return self._tmux_session is None
+
     def _is_tmux_idle(self) -> bool:
         """Check if the tmux pane shows Claude Code's idle prompt (❯)."""
+        if self._tmux_session is None:
+            return False
         try:
             pane = self._tmux_session.active_window.active_pane
             captured = pane.capture_pane(start=-10)
@@ -456,6 +477,8 @@ class CCSession:
 
     def terminal_capture(self, lines: int = 50) -> str:
         """Capture the current tmux pane output."""
+        if self._tmux_session is None:
+            return "(session is dormant — not yet resumed)"
         try:
             pane = self._tmux_session.active_window.active_pane
             captured = pane.capture_pane(start=-lines)
@@ -755,7 +778,7 @@ class CCSession:
         """Send Ctrl+C (escape) to Claude Code."""
         self.send_keys("C-c")
 
-    def btw(self, question: str, timeout: int = 30) -> str:
+    def btw(self, question: str, timeout: int = 30, lock_timeout: int = 30) -> str:
         """Ask a /btw side question. Ephemeral — doesn't enter conversation history.
 
         Sends '/btw <question>' to the tmux pane, waits for the response overlay,
@@ -763,10 +786,15 @@ class CCSession:
         """
         if self._tmux_session is None:
             raise RuntimeError(f"Session {self.id} is destroyed")
-        if not self._tmux_lock.acquire(timeout=2):
+        if not self._tmux_lock.acquire(timeout=lock_timeout):
             raise RuntimeError("Session is busy (locked)")
         try:
-            if not self._is_tmux_idle():
+            # Wait for idle (previous btw overlay may still be dismissing)
+            for _ in range(15):
+                if self._is_tmux_idle():
+                    break
+                time.sleep(1)
+            else:
                 raise RuntimeError("Session is busy")
 
             pane = self._tmux_session.active_window.active_pane
@@ -781,7 +809,12 @@ class CCSession:
                 content = pane.cmd("capture-pane", "-p").stdout
                 full_text = "\n".join(content) if isinstance(content, list) else str(content)
                 if _has_overlay_footer(full_text):
-                    lines = full_text.split("\n")
+                    # Capture full pane including scrollback
+                    # -S - starts from beginning, -E - ends at bottom
+                    full_content = pane.cmd("capture-pane", "-p", "-S", "-", "-E", "-").stdout
+                    full_text_all = "\n".join(full_content) if isinstance(full_content, list) else str(full_content)
+
+                    lines = full_text_all.split("\n")
                     # The overlay echoes "/btw <question>" then shows the answer.
                     # Find the LAST occurrence of the question echo, capture after it.
                     last_q_idx = -1
@@ -798,9 +831,9 @@ class CCSession:
                                 response_lines.append(stripped)
                     break
 
-            # Dismiss the overlay
+            # Dismiss the overlay and wait for it to clear
             pane.send_keys("Escape", enter=False)
-            time.sleep(0.3)
+            time.sleep(1.5)
 
             return "\n".join(response_lines)
         finally:
@@ -948,6 +981,68 @@ class CCSession:
                 pass
 
         return {"title": title, "status": status}
+
+    def generate_gmail_suggestions(self) -> list[dict]:
+        """Generate Gmail search suggestions based on conversation context. Calls /btw."""
+        cache_path = os.path.join(self.working_dir, "suggested-searches.json")
+        jsonl_path = self._ensure_jsonl_path()
+        jsonl_size = os.path.getsize(jsonl_path) if jsonl_path and os.path.exists(jsonl_path) else 0
+
+        # Check if cache is fresh enough
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r") as f:
+                    cached = json.load(f)
+                cached_size = cached.get("_jsonl_size", 0)
+                if jsonl_size - cached_size < max(cached_size * 0.1, 50_000):
+                    return cached.get("suggestions", [])
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        suggestions: list[dict] = []
+        try:
+            if not self._is_tmux_idle():
+                return []
+            # Short prompt → short response → fits on one screen (no scroll issues)
+            response = self.btw(
+                "Suggest 3 Gmail searches for this conversation. "
+                'JSON only: {"suggestions":[{"label":"2-4 words","query":"gmail query"}]}'
+            )
+            if response:
+                flat = " ".join(response.split())
+                # Find last complete JSON object
+                candidates = []
+                depth = 0
+                obj_start = -1
+                for i, ch in enumerate(flat):
+                    if ch == "{":
+                        if depth == 0:
+                            obj_start = i
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0 and obj_start >= 0:
+                            candidates.append(flat[obj_start : i + 1])
+                            obj_start = -1
+                for candidate in reversed(candidates):
+                    try:
+                        parsed = json.loads(candidate)
+                        sug = parsed.get("suggestions", [])
+                        # Filter out echo-back of our example prompt
+                        sug = [s for s in sug if s.get("label") not in ("2-4 words", "2-4 word label")]
+                        if sug:
+                            suggestions = sug[:5]
+                            break
+                    except json.JSONDecodeError:
+                        pass
+            if suggestions:
+                with open(cache_path, "w") as f:
+                    json.dump({"suggestions": suggestions, "_jsonl_size": jsonl_size}, f, indent=2)
+                logger.info("gmail_suggestions %s: %d chips cached", self.id, len(suggestions))
+        except Exception as e:
+            logger.warning("btw gmail suggestions failed for %s: %s", self.id, e)
+
+        return suggestions
 
     def conversation(self) -> list[dict]:
         """Reconstruct full conversation from the JSONL transcript.
@@ -1108,14 +1203,25 @@ class CCHost:
 
     Each session runs Claude Code interactively in tmux. Responses are
     read from Claude's JSONL conversation log, not from TUI capture.
+
+    Sessions are persisted to a manifest file (~/.cchost/sessions.json)
+    so they survive server restarts. On startup, sessions from the manifest
+    are loaded as "dormant" (no tmux process). When accessed, they are
+    lazily resumed with claude --resume.
     """
 
-    def __init__(self, max_sessions: int = 5, history_limit: int = 50000):
+    def __init__(self, max_sessions: int = 5, history_limit: int = 50000, manifest_path: Optional[str] = None):
         self._server = libtmux.Server()
         self._sessions: dict[str, CCSession] = {}
         self._max_sessions = max_sessions
         self._history_limit = history_limit
+        self._resume_lock = threading.Lock()
+        self._manifest_path_override = manifest_path
         self._rediscover()
+        self._load_dormant_sessions()
+        # Persist any sessions found via tmux rediscovery
+        if self._sessions:
+            self._save_manifest()
 
     def _rediscover(self) -> None:
         """Find existing cchost-* tmux sessions."""
@@ -1126,12 +1232,106 @@ class CCHost:
                 if session_id not in self._sessions:
                     pane = tmux_session.active_window.active_pane
                     workdir = pane.pane_current_path or "/tmp"
-                    self._sessions[session_id] = CCSession(
+                    session = CCSession(
                         id=session_id,
                         working_dir=workdir,
                         _tmux_session=tmux_session,
                         _host=self,
                     )
+                    session._find_jsonl()  # populate _claude_session_id
+                    self._sessions[session_id] = session
+
+    # ------------------------------------------------------------------
+    # Manifest persistence
+    # ------------------------------------------------------------------
+
+    def _manifest_path(self) -> str:
+        if self._manifest_path_override:
+            return self._manifest_path_override
+        return os.path.expanduser("~/.cchost/sessions.json")
+
+    def _load_manifest(self) -> dict:
+        path = self._manifest_path()
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def _save_manifest(self) -> None:
+        path = self._manifest_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        manifest = {}
+        for sid, session in self._sessions.items():
+            manifest[sid] = {
+                "working_dir": session.working_dir,
+                "claude_session_id": session._claude_session_id,
+                "created_at": session.created_at.isoformat(),
+            }
+        # Atomic write: write to temp file then rename
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+        os.replace(tmp_path, path)
+
+    def _load_dormant_sessions(self) -> None:
+        """Load sessions from manifest that don't have a live tmux process."""
+        manifest = self._load_manifest()
+        for session_id, meta in manifest.items():
+            if session_id in self._sessions:
+                continue  # already rediscovered from tmux
+            working_dir = meta.get("working_dir", "/tmp")
+            if not os.path.isdir(working_dir):
+                logger.info("Skipping dormant session %s — working_dir %s gone", session_id, working_dir)
+                continue
+            created_str = meta.get("created_at")
+            try:
+                created_at = datetime.fromisoformat(created_str) if created_str else datetime.now(timezone.utc)
+            except (ValueError, TypeError):
+                created_at = datetime.now(timezone.utc)
+            self._sessions[session_id] = CCSession(
+                id=session_id,
+                working_dir=working_dir,
+                created_at=created_at,
+                _tmux_session=None,  # dormant — no tmux process
+                _host=self,
+                _claude_session_id=meta.get("claude_session_id"),
+            )
+        logger.info(
+            "Loaded %d dormant sessions from manifest",
+            sum(1 for s in self._sessions.values() if s._tmux_session is None),
+        )
+
+    # ------------------------------------------------------------------
+    # Resume
+    # ------------------------------------------------------------------
+
+    def _resume_session(self, session: CCSession) -> None:
+        """Spin up a tmux process for a dormant session using claude --resume."""
+        with self._resume_lock:
+            if session._tmux_session is not None:
+                return  # already resumed (another thread got here first)
+
+            tmux_name = f"cchost-{session.id}"
+            cchost_url = os.environ.get("CCHOST_API_URL", "http://localhost:8420")
+
+            resume_flag = ""
+            if session._claude_session_id:
+                resume_flag = f"--resume {session._claude_session_id} "
+
+            tmux_session = self._server.new_session(
+                session_name=tmux_name,
+                start_directory=session.working_dir,
+                window_command=f"CCHOST_URL={cchost_url} claude {resume_flag}--dangerously-skip-permissions",
+            )
+            tmux_session.set_option("history-limit", self._history_limit)
+            session._tmux_session = tmux_session
+            session._wait_for_ready(is_resume=bool(session._claude_session_id))
+            # Re-resolve JSONL path after resume (may be a new file)
+            session._jsonl_path = None
+            session._last_line_count = 0
+            session._find_jsonl()
+            logger.info("Resumed session %s (claude_session_id=%s)", session.id, session._claude_session_id)
 
     def create(
         self,
@@ -1150,10 +1350,13 @@ class CCHost:
         os.makedirs(working_dir, exist_ok=True)
         tmux_name = f"cchost-{session_id}"
 
+        # Set CCHOST_URL so skills can call back into the API
+        cchost_url = os.environ.get("CCHOST_API_URL", "http://localhost:8420")
+
         tmux_session = self._server.new_session(
             session_name=tmux_name,
             start_directory=working_dir,
-            window_command="claude --dangerously-skip-permissions",
+            window_command=f"CCHOST_URL={cchost_url} claude --dangerously-skip-permissions",
         )
         tmux_session.set_option("history-limit", self._history_limit)
 
@@ -1168,21 +1371,34 @@ class CCHost:
         if wait_ready:
             session._wait_for_ready()
 
+        # Persist to manifest so session survives restarts
+        session._find_jsonl()  # populate _claude_session_id
+        self._save_manifest()
+
         return session
 
     def get(self, session_id: str) -> CCSession:
         if session_id not in self._sessions:
             raise KeyError(f"Session {session_id} not found")
-        return self._sessions[session_id]
+        session = self._sessions[session_id]
+        # Lazy resume: spin up tmux if dormant
+        if session._tmux_session is None:
+            self._resume_session(session)
+            self._save_manifest()  # update claude_session_id after resume
+        return session
 
     def list(self) -> list[CCSession]:
         return list(self._sessions.values())
 
     def destroy(self, session_id: str) -> None:
-        session = self.get(session_id)
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError(f"Session {session_id} not found")
         session.destroy()
         self._sessions.pop(session_id, None)
+        self._save_manifest()
 
     def destroy_all(self) -> None:
         for sid in list(self._sessions.keys()):
             self.destroy(sid)
+        self._save_manifest()

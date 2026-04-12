@@ -29,6 +29,30 @@ def _mock_credentials():
 # ---------------------------------------------------------------------------
 
 
+class TestOAuthCallback:
+    def test_callback_success_redirects_with_gmail_connected(self):
+        with (
+            patch("google_routes.google_service.get_oauth_flow"),
+            patch("google_routes.google_service.exchange_code"),
+            patch("google_routes.google_service.TokenManager"),
+        ):
+            resp = client.get("/api/auth/google/callback?code=test-code", follow_redirects=False)
+        assert resp.status_code == 307
+        assert "gmail_connected=true" in resp.headers["location"]
+        assert "tab=inbox" not in resp.headers["location"]
+
+    def test_callback_error_redirects_with_gmail_error(self):
+        resp = client.get("/api/auth/google/callback?error=access_denied", follow_redirects=False)
+        assert resp.status_code == 307
+        assert "gmail_error=access_denied" in resp.headers["location"]
+        assert "tab=inbox" not in resp.headers["location"]
+
+    def test_callback_no_code_redirects_with_error(self):
+        resp = client.get("/api/auth/google/callback", follow_redirects=False)
+        assert resp.status_code == 307
+        assert "gmail_error=no_code" in resp.headers["location"]
+
+
 class TestAuthStatus:
     def test_auth_status_not_connected(self):
         with patch("google_routes.google_service.TokenManager") as MockTM:
@@ -98,7 +122,7 @@ class TestGmailScan:
         with (
             patch("google_routes.google_service.TokenManager") as MockTM,
             patch("google_routes.google_service.build_gmail_service", return_value=mock_gmail),
-            patch("google_routes._load_analyzed_threads", return_value={}),
+            patch("google_routes._load_downloaded_threads", return_value={}),
         ):
             MockTM.return_value.load.return_value = creds
             MockTM.return_value.refresh_if_needed.return_value = creds
@@ -176,7 +200,7 @@ class TestGmailSearch:
 
 
 class TestDownloadAttachments:
-    def test_download_attachments(self, tmp_path):
+    def test_download_attachments_and_gmail_source(self, tmp_path):
         creds = _mock_credentials()
         mock_gmail = MagicMock()
 
@@ -184,21 +208,36 @@ class TestDownloadAttachments:
 
         file_data = base64.urlsafe_b64encode(b"PDF-CONTENT-HERE").decode()
 
-        mock_gmail.users.return_value.threads.return_value.get.return_value.execute.return_value = {
-            "messages": [
-                {
-                    "id": "msg1",
-                    "payload": {
-                        "parts": [
-                            {
-                                "filename": "invoice.pdf",
-                                "body": {"attachmentId": "att1"},
-                            }
-                        ]
-                    },
-                }
-            ]
-        }
+        # threads.get is called twice: once for download, once for sender metadata
+        mock_gmail.users.return_value.threads.return_value.get.return_value.execute.side_effect = [
+            # First call: full thread for download
+            {
+                "messages": [
+                    {
+                        "id": "msg1",
+                        "payload": {
+                            "headers": [{"name": "From", "value": "janie@landmarkswest.com"}],
+                            "parts": [
+                                {
+                                    "filename": "invoice.pdf",
+                                    "body": {"attachmentId": "att1"},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            },
+            # Second call: metadata for gmail-source.json
+            {
+                "messages": [
+                    {
+                        "payload": {
+                            "headers": [{"name": "From", "value": "janie@landmarkswest.com"}],
+                        }
+                    }
+                ]
+            },
+        ]
         mock_gmail.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.return_value = {
             "data": file_data
         }
@@ -214,8 +253,8 @@ class TestDownloadAttachments:
             patch("google_routes.google_service.TokenManager") as MockTM,
             patch("google_routes.google_service.build_gmail_service", return_value=mock_gmail),
             patch("server.host", fake_host),
-            patch("google_routes._load_analyzed_threads", return_value={}),
-            patch("google_routes._save_analyzed_threads"),
+            patch("google_routes._load_downloaded_threads", return_value={}),
+            patch("google_routes._save_downloaded_threads"),
         ):
             MockTM.return_value.load.return_value = creds
             MockTM.return_value.refresh_if_needed.return_value = creds
@@ -227,6 +266,15 @@ class TestDownloadAttachments:
         # Verify file was written to disk
         inbox_dir = os.path.join(str(tmp_path), "inbox", "thread99")
         assert os.path.exists(os.path.join(inbox_dir, "invoice.pdf"))
+        # Verify gmail-source.json was written
+        import json
+
+        source_path = os.path.join(str(tmp_path), "gmail-source.json")
+        assert os.path.exists(source_path)
+        with open(source_path) as f:
+            source = json.load(f)
+        assert "thread99" in source["thread_ids"]
+        assert source["sender"] == "janie@landmarkswest.com"
 
     def test_download_session_not_found(self):
         fake_host = MagicMock()
@@ -368,8 +416,8 @@ class TestAnalyzeComposite:
             patch("google_routes.google_service.build_gmail_service", return_value=mock_gmail),
             patch("server.host", fake_host),
             patch("server.run_manager", fake_run_manager),
-            patch("google_routes._load_analyzed_threads", return_value={}),
-            patch("google_routes._save_analyzed_threads"),
+            patch("google_routes._load_downloaded_threads", return_value={}),
+            patch("google_routes._save_downloaded_threads"),
         ):
             MockTM.return_value.load.return_value = creds
             MockTM.return_value.refresh_if_needed.return_value = creds

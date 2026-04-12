@@ -137,7 +137,7 @@ def run_test(name: str, session, message: str, timeout: int = 60):
     last_event = events[-1] if events else None
     done_time = next((e["elapsed_s"] for e in events if e["type"] == "last-prompt"), None)
 
-    print(f"\nResults:")
+    print("\nResults:")
     print(f"  last-prompt in JSONL: {'YES at +{:.2f}s'.format(done_time) if done_time else 'NO'}")
     print(f"  tmux shows ❯ idle:   {'YES' if tmux_idle else 'NO'}")
     print(f"  total events:        {len(events)}")
@@ -158,7 +158,7 @@ def main():
     shutil.rmtree(workdir, ignore_errors=True)
     os.makedirs(workdir, exist_ok=True)
 
-    host = CCHost()
+    host = CCHost(manifest_path=os.path.join(tempfile.mkdtemp(), "sessions.json"))
     session = host.create("done-test", working_dir=workdir)
     print(f"Session ready: {session.id}")
 

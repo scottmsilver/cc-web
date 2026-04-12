@@ -9,7 +9,7 @@ export type GmailThread = {
   date: string;
   message_count: number;
   attachment_count: number;
-  analyzed: boolean;
+  downloaded: boolean;
 };
 
 // ── Sessions ──
