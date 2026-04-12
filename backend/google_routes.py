@@ -661,26 +661,155 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _extract_header(headers: list[dict], name: str) -> str:
+    """Extract a header value from Gmail message headers."""
+    for h in headers:
+        if h.get("name", "").lower() == name.lower():
+            return h.get("value", "")
+    return ""
+
+
+def _extract_body_text(payload: dict) -> str:
+    """Recursively extract plain text body from a Gmail message payload."""
+    mime = payload.get("mimeType", "")
+    if mime == "text/plain":
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+    for part in payload.get("parts", []):
+        text = _extract_body_text(part)
+        if text:
+            return text
+    return ""
+
+
+def _extract_body_html(payload: dict) -> str:
+    """Recursively extract HTML body from a Gmail message payload."""
+    mime = payload.get("mimeType", "")
+    if mime == "text/html":
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+    for part in payload.get("parts", []):
+        html = _extract_body_html(part)
+        if html:
+            return html
+    return ""
+
+
+def _extract_inline_images(payload: dict) -> list[dict]:
+    """Recursively find inline image parts (Content-ID referenced)."""
+    images = []
+    mime = payload.get("mimeType", "")
+    if mime.startswith("image/"):
+        cid = ""
+        for h in payload.get("headers", []):
+            if h.get("name", "").lower() == "content-id":
+                cid = h.get("value", "").strip("<>")
+        att_id = payload.get("body", {}).get("attachmentId")
+        filename = payload.get("filename", "")
+        if att_id and (cid or not filename):
+            # Inline image (has Content-ID or no filename = embedded)
+            images.append(
+                {
+                    "attachmentId": att_id,
+                    "mimeType": mime,
+                    "cid": cid,
+                    "filename": filename or f"inline_{len(images)}.{mime.split('/')[-1]}",
+                }
+            )
+    for part in payload.get("parts", []):
+        images.extend(_extract_inline_images(part))
+    return images
+
+
 def _download_thread_attachments(
     creds: google_service.Credentials,
     thread_id: str,
     dest_dir: str,
 ) -> list[str]:
-    """Download all attachments from a Gmail thread to dest_dir. Returns filenames."""
+    """Download full email content from a Gmail thread to dest_dir. Returns filenames.
+
+    Saves:
+    - thread.json: structured metadata (headers, text body, HTML body per message)
+    - thread.eml: raw RFC 2822 MIME for each message (message_0.eml, message_1.eml, ...)
+    - Inline images (image_*.png/jpg)
+    - Named attachments (PDFs, ZIPs, etc.)
+    """
     gmail = google_service.build_gmail_service(creds)
 
     thread = _gmail_api_call(lambda: gmail.users().threads().get(userId="me", id=thread_id, format="full").execute())
 
     downloaded_files: list[str] = []
-    for msg in thread.get("messages", []):
-        attachment_parts = _extract_attachment_parts(msg.get("payload", {}))
+    thread_metadata: list[dict] = []
+
+    for msg_idx, msg in enumerate(thread.get("messages", [])):
+        msg_id = msg["id"]
+        payload = msg.get("payload", {})
+        headers = payload.get("headers", [])
+
+        # Extract message metadata
+        msg_meta = {
+            "message_id": msg_id,
+            "from": _extract_header(headers, "From"),
+            "to": _extract_header(headers, "To"),
+            "cc": _extract_header(headers, "Cc"),
+            "subject": _extract_header(headers, "Subject"),
+            "date": _extract_header(headers, "Date"),
+            "body_text": _extract_body_text(payload),
+            "body_html": _extract_body_html(payload),
+            "attachments": [],
+            "inline_images": [],
+        }
+
+        # Download raw RFC 2822 MIME
+        try:
+            raw_msg = _gmail_api_call(
+                lambda mid=msg_id: gmail.users().messages().get(userId="me", id=mid, format="raw").execute()
+            )
+            raw_data = base64.urlsafe_b64decode(raw_msg["raw"])
+            eml_name = f"message_{msg_idx}.eml"
+            eml_path = os.path.join(dest_dir, eml_name)
+            with open(eml_path, "wb") as f:
+                f.write(raw_data)
+            downloaded_files.append(eml_name)
+            logger.info("Saved raw email: %s (%d bytes)", eml_name, len(raw_data))
+        except Exception:
+            logger.warning("Could not download raw email for message %s", msg_id)
+
+        # Download inline images
+        inline_images = _extract_inline_images(payload)
+        for img in inline_images:
+            try:
+                att = _gmail_api_call(
+                    lambda mid=msg_id, aid=img["attachmentId"]: gmail.users()
+                    .messages()
+                    .attachments()
+                    .get(userId="me", messageId=mid, id=aid)
+                    .execute()
+                )
+                data = base64.urlsafe_b64decode(att["data"])
+                img_filename = os.path.basename(img["filename"])
+                if not img_filename:
+                    ext = img["mimeType"].split("/")[-1]
+                    img_filename = f"inline_{msg_idx}_{img['cid'] or 'img'}.{ext}"
+                img_path = os.path.join(dest_dir, img_filename)
+                with open(img_path, "wb") as f:
+                    f.write(data)
+                downloaded_files.append(img_filename)
+                msg_meta["inline_images"].append({"filename": img_filename, "cid": img["cid"]})
+                logger.info("Downloaded inline image: %s (%d bytes)", img_filename, len(data))
+            except Exception:
+                logger.warning("Could not download inline image: %s", img.get("filename"))
+
+        # Download named attachments
+        attachment_parts = _extract_attachment_parts(payload)
         for part in attachment_parts:
             filename = part["filename"]
             attachment_id = part["body"]["attachmentId"]
 
-            # Stream attachment data from Gmail API
             att = _gmail_api_call(
-                lambda mid=msg["id"], aid=attachment_id: gmail.users()
+                lambda mid=msg_id, aid=attachment_id: gmail.users()
                 .messages()
                 .attachments()
                 .get(userId="me", messageId=mid, id=aid)
@@ -689,24 +818,22 @@ def _download_thread_attachments(
 
             data = base64.urlsafe_b64decode(att["data"])
 
-            # Sanitize filename to prevent path traversal
             filename = os.path.basename(filename)
             if not filename:
                 continue
 
-            # Write to disk immediately
             filepath = os.path.join(dest_dir, filename)
             with open(filepath, "wb") as f:
                 f.write(data)
 
             logger.info("Downloaded attachment: %s (%d bytes)", filename, len(data))
+            msg_meta["attachments"].append(filename)
 
             # Handle ZIP files: extract contents alongside the zip
             if filename.lower().endswith(".zip"):
                 try:
                     with zipfile.ZipFile(BytesIO(data)) as zf:
                         for member in zf.namelist():
-                            # Skip directories and hidden files
                             if member.endswith("/") or member.startswith("__MACOSX"):
                                 continue
                             member_name = os.path.basename(member)
@@ -721,6 +848,15 @@ def _download_thread_attachments(
                     logger.warning("Could not extract ZIP: %s", filename)
 
             downloaded_files.append(filename)
+
+        thread_metadata.append(msg_meta)
+
+    # Write thread metadata as JSON
+    meta_path = os.path.join(dest_dir, "thread.json")
+    with open(meta_path, "w") as f:
+        json.dump({"thread_id": thread_id, "messages": thread_metadata}, f, indent=2)
+    downloaded_files.append("thread.json")
+    logger.info("Saved thread metadata: %d messages", len(thread_metadata))
 
     return downloaded_files
 

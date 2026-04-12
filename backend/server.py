@@ -710,6 +710,20 @@ def list_files(session_id: str):
 @app.get("/api/sessions/{session_id}/files/{path:path}")
 def download_file(session_id: str, path: str):
     session = _get_session_or_404(session_id)
+
+    # If path is a directory, list its contents
+    target = os.path.join(session.working_dir, path)
+    resolved = os.path.realpath(target)
+    if not resolved.startswith(os.path.realpath(session.working_dir)):
+        raise HTTPException(status_code=400, detail="Path traversal blocked")
+    if os.path.isdir(resolved):
+        entries = []
+        for name in sorted(os.listdir(resolved)):
+            full = os.path.join(resolved, name)
+            rel = os.path.join(path.rstrip("/"), name)
+            entries.append({"name": name, "path": rel, "is_dir": os.path.isdir(full)})
+        return {"directory": path, "entries": entries}
+
     try:
         data = session.read_file(path)
         # Guess content type
@@ -721,6 +735,8 @@ def download_file(session_id: str, path: str):
             media_type = "application/json"
         elif path.endswith(".md") or path.endswith(".txt"):
             media_type = "text/plain"
+        elif path.endswith(".eml"):
+            media_type = "message/rfc822"
         else:
             media_type = "application/octet-stream"
         return HTTPResponse(content=data, media_type=media_type)

@@ -1,14 +1,113 @@
 "use client";
 
-import { useRef, useState, useEffect, type FormEvent, type DragEvent } from "react";
+import { useRef, useState, useEffect, type FormEvent, type DragEvent, type ClipboardEvent } from "react";
 
 import { uploadFile as apiUploadFile, fetchCommands, type SlashCommand } from "@/lib/api";
+
+/**
+ * Convert pasted HTML to markdown. Handles the common cases:
+ * headings, bold, italic, links, lists, tables, code blocks, images.
+ */
+function htmlToMarkdown(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+
+  function walk(node: Node): string {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.textContent?.replace(/\n/g, " ") ?? "";
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const el = node as HTMLElement;
+    const tag = el.tagName.toLowerCase();
+    const children = Array.from(el.childNodes).map(walk).join("");
+
+    switch (tag) {
+      case "h1": return `# ${children.trim()}\n\n`;
+      case "h2": return `## ${children.trim()}\n\n`;
+      case "h3": return `### ${children.trim()}\n\n`;
+      case "h4": return `#### ${children.trim()}\n\n`;
+      case "h5": return `##### ${children.trim()}\n\n`;
+      case "h6": return `###### ${children.trim()}\n\n`;
+      case "b": case "strong": return `**${children}**`;
+      case "i": case "em": return `*${children}*`;
+      case "code": return el.parentElement?.tagName.toLowerCase() === "pre" ? children : `\`${children}\``;
+      case "pre": return `\n\`\`\`\n${children.trim()}\n\`\`\`\n\n`;
+      case "a": {
+        const href = el.getAttribute("href");
+        return href ? `[${children}](${href})` : children;
+      }
+      case "img": {
+        const src = el.getAttribute("src");
+        const alt = el.getAttribute("alt") || "image";
+        return src ? `![${alt}](${src})` : "";
+      }
+      case "br": return "\n";
+      case "p": case "div": return `${children.trim()}\n\n`;
+      case "blockquote": return children.trim().split("\n").map((l: string) => `> ${l}`).join("\n") + "\n\n";
+      case "ul": case "ol": return `\n${children}\n`;
+      case "li": {
+        const isOrdered = el.parentElement?.tagName.toLowerCase() === "ol";
+        const idx = isOrdered ? Array.from(el.parentElement!.children).indexOf(el) + 1 : 0;
+        const prefix = isOrdered ? `${idx}. ` : "- ";
+        return `${prefix}${children.trim()}\n`;
+      }
+      case "table": return `\n${children}\n`;
+      case "thead": case "tbody": return children;
+      case "tr": {
+        const cells = Array.from(el.children).map((td) => walk(td).trim());
+        const row = `| ${cells.join(" | ")} |`;
+        // Add header separator after first row in thead
+        if (el.parentElement?.tagName.toLowerCase() === "thead") {
+          const sep = `| ${cells.map(() => "---").join(" | ")} |`;
+          return `${row}\n${sep}\n`;
+        }
+        return `${row}\n`;
+      }
+      case "td": case "th": return children;
+      case "hr": return "\n---\n\n";
+      case "span": case "section": case "article": case "main": case "header": case "footer": case "nav":
+        return children;
+      default: return children;
+    }
+  }
+
+  return walk(doc.body).replace(/\n{3,}/g, "\n\n").trim();
+}
 
 type UploadedFile = {
   originalName: string;
   serverName: string;
   status: "uploading" | "uploaded" | "error";
+  progress: number; // 0-1
 };
+
+/** Apple-style circular progress indicator — fills clockwise as a pie slice. */
+function UploadProgress({ progress }: { progress: number }) {
+  const r = 7;
+  const cx = 10;
+  const cy = 10;
+  const angle = progress * 360;
+  const rad = ((angle - 90) * Math.PI) / 180;
+  const x = cx + r * Math.cos(rad);
+  const y = cy + r * Math.sin(rad);
+  const largeArc = angle > 180 ? 1 : 0;
+
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" className="flex-shrink-0">
+      {/* Background circle */}
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.25" />
+      {progress > 0 && progress < 1 && (
+        <path
+          d={`M ${cx} ${cy - r} A ${r} ${r} 0 ${largeArc} 1 ${x} ${y} L ${cx} ${cy} Z`}
+          fill="currentColor"
+          opacity="0.7"
+        />
+      )}
+      {progress >= 1 && (
+        <circle cx={cx} cy={cy} r={r} fill="currentColor" opacity="0.7" />
+      )}
+    </svg>
+  );
+}
 
 export type GmailDownload = {
   threadId: string;
@@ -71,11 +170,10 @@ export function ChatInput({
   const allUploaded = (uploadedFiles.length === 0 || uploadedFiles.every((f) => f.status === "uploaded"))
     && (!gmailDownloads || gmailDownloads.every((d) => d.status !== "downloading"));
 
-  // Upload a single file immediately
+  // Upload a single file — non-blocking, shows progress in chip
   const uploadFileImmediately = async (file: File) => {
-    // Add to list as "uploading"
-    const entry: UploadedFile = { originalName: file.name, serverName: file.name, status: "uploading" };
-    setUploadedFiles((prev) => [...prev, entry]);
+    const name = file.name;
+    setUploadedFiles((prev) => [...prev, { originalName: name, serverName: name, status: "uploading", progress: 0 }]);
 
     // Ensure session exists
     let sid = sessionId;
@@ -84,36 +182,35 @@ export function ChatInput({
     }
     if (!sid) {
       setUploadedFiles((prev) =>
-        prev.map((f) => (f === entry ? { ...f, status: "error" } : f))
+        prev.map((f) => (f.originalName === name && f.status === "uploading" ? { ...f, status: "error" } : f))
       );
       return;
     }
 
     try {
-      const uploaded = await apiUploadFile(sid, file);
+      const uploaded = await apiUploadFile(sid, file, (fraction) => {
+        setUploadedFiles((prev) =>
+          prev.map((f) =>
+            f.originalName === name && f.status === "uploading" ? { ...f, progress: fraction } : f
+          )
+        );
+      });
 
-      if (uploaded.length === 0) {
-        throw new Error("Server returned empty upload list");
-      }
-
-      const serverName = uploaded[0];
+      if (uploaded.length === 0) throw new Error("Server returned empty upload list");
 
       setUploadedFiles((prev) =>
         prev.map((f) =>
-          f.originalName === file.name && f.status === "uploading"
-            ? { ...f, serverName, status: "uploaded" }
+          f.originalName === name && f.status === "uploading"
+            ? { ...f, serverName: uploaded[0], status: "uploaded", progress: 1 }
             : f
         )
       );
-
       onFilesUploaded?.(uploaded);
     } catch (error) {
       console.warn("File upload failed:", error);
       setUploadedFiles((prev) =>
         prev.map((f) =>
-          f.originalName === file.name && f.status === "uploading"
-            ? { ...f, status: "error" }
-            : f
+          f.originalName === name && f.status === "uploading" ? { ...f, status: "error" } : f
         )
       );
     }
@@ -164,45 +261,56 @@ export function ChatInput({
     }
   };
 
-  // @ and / autocomplete logic
+  // @ and / autocomplete logic — only check when trigger chars are present
   const handleInputChange = (value: string) => {
     setInput(value);
-    const cursorPos = textInputRef.current?.selectionStart ?? value.length;
-    // Find the @ token at cursor
-    const beforeCursor = value.slice(0, cursorPos);
-    const atMatch = beforeCursor.match(/@([^\s]*)$/);
-    if (atMatch && sessionFiles && sessionFiles.length > 0) {
-      setShowAtMenu(true);
-      setAtFilter(atMatch[1].toLowerCase());
-      setAtCursorPos(cursorPos);
-      setShowSlashMenu(false);
-      setShowPlusMenu(false);
-      if (showGmailPicker) onGmailPickerToggle?.(false);
-    } else {
-      setShowAtMenu(false);
+
+    // Fast path: no trigger characters, dismiss any open menus
+    const hasAt = value.includes("@");
+    const startsWithSlash = value.startsWith("/");
+
+    if (!hasAt && showAtMenu) setShowAtMenu(false);
+    if (!startsWithSlash && showSlashMenu) setShowSlashMenu(false);
+    if (!hasAt && !startsWithSlash) return;
+
+    // @ autocomplete
+    if (hasAt && sessionFiles && sessionFiles.length > 0) {
+      const cursorPos = textInputRef.current?.selectionStart ?? value.length;
+      const beforeCursor = value.slice(0, cursorPos);
+      const atMatch = beforeCursor.match(/@([^\s]*)$/);
+      if (atMatch) {
+        setShowAtMenu(true);
+        setAtFilter(atMatch[1].toLowerCase());
+        setAtCursorPos(cursorPos);
+        if (showSlashMenu) setShowSlashMenu(false);
+        if (showPlusMenu) setShowPlusMenu(false);
+        if (showGmailPicker) onGmailPickerToggle?.(false);
+        return;
+      }
+      if (showAtMenu) setShowAtMenu(false);
     }
 
-    // Check for / at start of input
-    const slashMatch = value.match(/^\/(\S*)$/);
-    if (slashMatch) {
-      const filter = slashMatch[1].toLowerCase();
-      setSlashFilter(filter);
-      setSlashHighlight(0);
-      setShowPlusMenu(false);
-      if (showGmailPicker) onGmailPickerToggle?.(false);
-      // Lazy-load commands
-      if (slashCommandsCacheRef.current) {
-        setSlashCommands(slashCommandsCacheRef.current);
-        setShowSlashMenu(true);
-      } else {
-        void fetchCommands().then((cmds) => {
-          slashCommandsCacheRef.current = cmds;
-          setSlashCommands(cmds);
+    // / slash command autocomplete (only if entire input is a slash command)
+    if (startsWithSlash) {
+      const slashMatch = value.match(/^\/(\S*)$/);
+      if (slashMatch) {
+        setSlashFilter(slashMatch[1].toLowerCase());
+        setSlashHighlight(0);
+        if (showPlusMenu) setShowPlusMenu(false);
+        if (showGmailPicker) onGmailPickerToggle?.(false);
+        if (slashCommandsCacheRef.current) {
+          setSlashCommands(slashCommandsCacheRef.current);
           setShowSlashMenu(true);
-        });
+        } else {
+          void fetchCommands().then((cmds) => {
+            slashCommandsCacheRef.current = cmds;
+            setSlashCommands(cmds);
+            setShowSlashMenu(true);
+          });
+        }
+        return;
       }
-    } else {
-      setShowSlashMenu(false);
+      if (showSlashMenu) setShowSlashMenu(false);
     }
   };
 
@@ -255,14 +363,14 @@ export function ChatInput({
 
   return (
     <div
-      className={`border-t border-th-border ${dragOver ? "bg-th-surface border-th-accent/50" : ""}`}
+      className={`border-t border-th-border max-h-[50vh] flex flex-col ${dragOver ? "bg-th-surface border-th-accent/50" : ""}`}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
     >
-      {/* File chips (uploads + gmail downloads) */}
+      {/* File chips (uploads + gmail downloads) — scrollable */}
       {(uploadedFiles.length > 0 || (gmailDownloads && gmailDownloads.length > 0)) && (
-        <div className="px-4 pt-3 flex flex-wrap gap-2">
+        <div className="px-4 pt-3 flex flex-wrap gap-2 max-h-28 overflow-y-auto flex-shrink-0">
           {/* Gmail download chips */}
           {gmailDownloads?.map((d) => (
             <span
@@ -306,29 +414,29 @@ export function ChatInput({
                     : "bg-th-success-bg border-th-success-text/30 text-th-success-text"
               }`}
             >
-              <span>
-                {f.status === "uploading" ? "\u23F3" : f.status === "error" ? "\u26A0" : "\u2713"}
-              </span>
-              <span className="max-w-[200px] truncate">
-                {f.serverName !== f.originalName && f.status === "uploaded"
-                  ? `${f.serverName} (was ${f.originalName})`
-                  : f.originalName}
-              </span>
-              {f.status !== "uploading" && (
-                <button
-                  onClick={() => removeFile(f.originalName)}
-                  className="hover:text-th-accent ml-0.5"
-                >
-                  \u00D7
-                </button>
+              {f.status === "uploading" ? (
+                <UploadProgress progress={f.progress} />
+              ) : f.status === "error" ? (
+                <span>{"\u26A0"}</span>
+              ) : (
+                <span>{"\u2713"}</span>
               )}
+              <span className="max-w-[200px] truncate">
+                {f.originalName}
+              </span>
+              <button
+                onClick={() => removeFile(f.originalName)}
+                className="hover:text-th-accent ml-0.5"
+              >
+                {"\u00D7"}
+              </button>
             </span>
           ))}
         </div>
       )}
 
-      {/* Input row */}
-      <form onSubmit={handleSubmit} className="p-3 flex items-center gap-2">
+      {/* Input row — pinned at bottom */}
+      <form onSubmit={handleSubmit} className="p-3 pb-4 flex items-end gap-2 flex-shrink-0">
         <input
           ref={fileInputRef}
           type="file"
@@ -388,6 +496,56 @@ export function ChatInput({
               e.target.style.height = "auto";
               e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px";
             }}
+            onPaste={(e: ClipboardEvent<HTMLTextAreaElement>) => {
+              const clipboardData = e.clipboardData;
+
+              // Handle pasted images (screenshots, copied images)
+              const imageFiles: File[] = [];
+              for (const item of Array.from(clipboardData.items)) {
+                if (item.type.startsWith("image/")) {
+                  const file = item.getAsFile();
+                  if (file) {
+                    // Name it with timestamp to avoid collisions
+                    const ext = item.type.split("/")[1] || "png";
+                    const named = new File([file], `pasted_${Date.now()}.${ext}`, { type: item.type });
+                    imageFiles.push(named);
+                  }
+                }
+              }
+              if (imageFiles.length > 0) {
+                e.preventDefault();
+                imageFiles.forEach((f) => void uploadFileImmediately(f));
+                return;
+              }
+
+              // Handle rich text paste (HTML from docs, web pages, etc.)
+              const html = clipboardData.getData("text/html");
+              const plainText = clipboardData.getData("text/plain");
+              if (html && plainText) {
+                // Only convert if the HTML has actual formatting (not just wrapped plain text)
+                const hasFormatting = /<(h[1-6]|strong|b|em|i|table|ul|ol|pre|blockquote|a\s)/i.test(html);
+                if (hasFormatting) {
+                  e.preventDefault();
+                  const markdown = htmlToMarkdown(html);
+                  // Insert at cursor position
+                  const textarea = textInputRef.current;
+                  if (textarea) {
+                    const start = textarea.selectionStart;
+                    const end = textarea.selectionEnd;
+                    const newValue = input.slice(0, start) + markdown + input.slice(end);
+                    handleInputChange(newValue);
+                    // Set cursor after pasted content
+                    requestAnimationFrame(() => {
+                      textarea.selectionStart = textarea.selectionEnd = start + markdown.length;
+                      textarea.style.height = "auto";
+                      textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
+                    });
+                  }
+                  return;
+                }
+              }
+              // Default: let browser handle plain text paste
+            }}
             onKeyDown={(e) => {
               if (showAtMenu && filteredFiles.length > 0) {
                 if (e.key === "Tab" || e.key === "Enter") {
@@ -442,7 +600,7 @@ export function ChatInput({
                   ? `Message about ${uploadedFiles.length} file(s)... (type @ to reference files)`
                   : "Message Claude Code... (type @ to reference files)"
             }
-            disabled={disabled || !allUploaded}
+            disabled={disabled}
             className="flex-1 bg-transparent px-2 py-2.5 text-sm text-th-text focus:outline-none placeholder-th-text-muted disabled:opacity-50 resize-none overflow-hidden"
           />
           {isWorking && !input.trim() ? (

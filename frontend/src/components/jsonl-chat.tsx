@@ -5,8 +5,80 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { fetchJsonl } from "@/lib/api";
-import { FileLink } from "@/components/file-link";
+import { FileLink, makeFileUrl } from "@/components/file-link";
+import { CCHOST_API } from "@/lib/config";
 import type { ContentBlock, JsonlEntry } from "@/lib/types";
+
+/* ── File reference chip for user messages ── */
+const IMAGE_EXT = /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i;
+const AT_REF_RE = /@\.\/([^\s]+)/g;
+
+function FileRefChip({ path, sessionId, files, onViewFile }: {
+  path: string;
+  sessionId: string;
+  files: string[];
+  onViewFile?: (path: string) => void;
+}) {
+  const resolved = files.find((f) => f === path) || files.find((f) => f.endsWith(`/${path}`)) || path;
+  const isImage = IMAGE_EXT.test(path);
+  const isPdf = path.endsWith(".pdf");
+  const isInFiles = files.some((f) => f === resolved || f.endsWith(`/${path}`));
+  const fileUrl = makeFileUrl(sessionId, resolved);
+
+  const handleClick = () => {
+    if (isInFiles && onViewFile) onViewFile(resolved);
+    else window.open(fileUrl, "_blank");
+  };
+
+  return (
+    <button
+      onClick={handleClick}
+      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-th-surface border border-th-border hover:border-th-accent/50 hover:bg-th-surface-hover transition-colors text-xs font-mono text-th-text group cursor-pointer align-middle mx-0.5"
+      title={`${resolved}${isInFiles ? " — click to view" : ""}`}
+    >
+      {isImage ? (
+        <img
+          src={fileUrl}
+          alt={path}
+          className="w-6 h-6 rounded object-cover flex-shrink-0"
+          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+        />
+      ) : (
+        <span className="flex-shrink-0 opacity-60">
+          {isPdf ? "\u{1F4C4}" : "\u{1F4CE}"}
+        </span>
+      )}
+      <span className="max-w-[180px] truncate group-hover:text-th-accent">{path.split("/").pop()}</span>
+    </button>
+  );
+}
+
+/** Replace @./path references in user message text with rich file chips. */
+function renderUserText(text: string, sessionId: string, files: string[], onViewFile?: (path: string) => void): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  AT_REF_RE.lastIndex = 0;
+  let match;
+  while ((match = AT_REF_RE.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    parts.push(
+      <FileRefChip
+        key={`ref-${match.index}`}
+        path={match[1]}
+        sessionId={sessionId}
+        files={files}
+        onViewFile={onViewFile}
+      />
+    );
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+  return parts;
+}
 
 /* ── Tool call (collapsed, click to expand) ── */
 function ToolCall({ block, files, sessionId, onViewFile }: { block: ContentBlock; files: string[]; sessionId: string; onViewFile?: (path: string) => void }) {
@@ -281,14 +353,17 @@ function CommandEntry({ entry }: { entry: JsonlEntry }) {
   );
 }
 
-function UserEntry({ entry, onViewImages }: { entry: JsonlEntry; onViewImages?: (images: string[], startIndex: number) => void }) {
+function UserEntry({ entry, sessionId, files, onViewFile, onViewImages }: { entry: JsonlEntry; sessionId: string; files: string[]; onViewFile?: (path: string) => void; onViewImages?: (images: string[], startIndex: number) => void }) {
   const rawContent = entry.message?.content;
   // Handle content as plain string (Claude Code sometimes writes it this way)
   if (typeof rawContent === "string" && rawContent.trim() && rawContent.length <= 2000) {
+    const hasRefs = AT_REF_RE.test(rawContent);
     return (
       <div className="flex justify-end py-1">
         <div className="max-w-[75%] rounded-2xl px-4 py-2.5 text-sm bg-th-user-bubble border border-th-user-bubble-border">
-          {rawContent}
+          {hasRefs && sessionId
+            ? renderUserText(rawContent, sessionId, files, onViewFile)
+            : rawContent}
         </div>
       </div>
     );
@@ -306,7 +381,6 @@ function UserEntry({ entry, onViewImages }: { entry: JsonlEntry; onViewImages?: 
       else if (b.type === "tool_result") resultBlocks.push(b);
       else if (b.type === "image") imageBlocks.push(b);
       else if (b.type === "document") {
-        // PDF documents can't render as <img> — skip them (they're already shown as file links)
         const src = (b as unknown as { source?: { media_type?: string } }).source;
         if (src?.media_type && !src.media_type.startsWith("image/")) {
           // Non-image document (PDF, etc.) — skip, already visible via tool_result
@@ -321,11 +395,17 @@ function UserEntry({ entry, onViewImages }: { entry: JsonlEntry; onViewImages?: 
   if (!text && resultBlocks.length === 0 && imageBlocks.length === 0) return null;
   if (text.length > 2000 && resultBlocks.length === 0 && imageBlocks.length === 0) return null;
 
+  const hasRefs = AT_REF_RE.test(text);
+
   return (
     <div>
       {text && text.length <= 2000 && (
         <div className="flex justify-end py-1">
-          <div className="max-w-[75%] rounded-2xl bg-th-user-bubble border border-th-user-bubble-border px-4 py-2.5 text-sm text-th-text">{text}</div>
+          <div className="max-w-[75%] rounded-2xl bg-th-user-bubble border border-th-user-bubble-border px-4 py-2.5 text-sm text-th-text">
+            {hasRefs && sessionId
+              ? renderUserText(text, sessionId, files, onViewFile)
+              : text}
+          </div>
         </div>
       )}
       {resultBlocks.map((b, j) => <ToolResult key={`r-${j}`} block={b} onViewImages={onViewImages} />)}
@@ -399,7 +479,7 @@ export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingM
     <div className="max-w-3xl mx-auto px-8 py-6 space-y-1">
       {conv.map((entry, i) => {
         if (entry.type === "assistant") return <AssistantEntry key={i} entry={entry} files={files} sessionId={sessionId!} onViewFile={onViewFile} />;
-        if (entry.type === "user") return <UserEntry key={i} entry={entry} onViewImages={onViewImages} />;
+        if (entry.type === "user") return <UserEntry key={i} entry={entry} sessionId={sessionId!} files={files} onViewFile={onViewFile} onViewImages={onViewImages} />;
         if (entry.type === "command") return <CommandEntry key={i} entry={entry} />;
         return null;
       })}
@@ -408,7 +488,9 @@ export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingM
       {pendingMessage && (
         <div className="flex justify-end py-1">
           <div className="max-w-[75%] rounded-2xl px-4 py-2.5 text-sm bg-th-user-bubble border border-th-user-bubble-border">
-            {pendingMessage}
+            {AT_REF_RE.test(pendingMessage) && sessionId
+              ? renderUserText(pendingMessage, sessionId, files, onViewFile)
+              : pendingMessage}
           </div>
         </div>
       )}

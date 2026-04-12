@@ -159,16 +159,41 @@ export function getFileUrl(sessionId: string, filePath: string): string {
 export async function uploadFile(
   sessionId: string,
   file: File,
+  onProgress?: (fraction: number) => void,
 ): Promise<string[]> {
   const formData = new FormData();
   formData.append(file.name, file);
-  const res = await fetch(
-    `${CCHOST_API}/api/sessions/${sessionId}/upload`,
-    { method: "POST", body: formData },
-  );
-  if (!res.ok) throw new Error(`Upload failed: HTTP ${res.status}`);
-  const data = (await res.json()) as { uploaded?: string[] };
-  return data.uploaded || [];
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${CCHOST_API}/api/sessions/${sessionId}/upload`);
+
+    if (onProgress) {
+      xhr.upload.addEventListener("progress", (e) => {
+        if (e.lengthComputable) {
+          onProgress(e.loaded / e.total);
+        }
+      });
+    }
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const data = JSON.parse(xhr.responseText) as { uploaded?: string[] };
+          resolve(data.uploaded || []);
+        } catch {
+          reject(new Error("Invalid JSON response"));
+        }
+      } else {
+        reject(new Error(`Upload failed: HTTP ${xhr.status}`));
+      }
+    });
+
+    xhr.addEventListener("error", () => reject(new Error("Upload network error")));
+    xhr.addEventListener("abort", () => reject(new Error("Upload aborted")));
+
+    xhr.send(formData);
+  });
 }
 
 export async function uploadFiles(
