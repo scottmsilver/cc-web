@@ -14,7 +14,9 @@ type FileViewerProps = {
   onClose: () => void;
   hideHeader?: boolean;
   onNavigate?: (path: string) => void;
+  pdfPage?: number;
   onPdfPageChange?: (page: number) => void;
+  onPdfPageCountChange?: (count: number) => void;
 };
 
 type PdfDocument = {
@@ -194,11 +196,29 @@ function SpreadsheetView({ data }: { data: ArrayBuffer }) {
   );
 }
 
+/** Compact PDF page navigation for use in toolbar headers. */
+export function PdfPageNav({ page, pageCount, onPageChange }: { page: number; pageCount: number; onPageChange: (p: number) => void }) {
+  if (pageCount <= 1) return null;
+  const navBtn = "w-7 h-7 flex items-center justify-center rounded border border-th-border text-th-text-muted hover:text-th-accent hover:border-th-accent/50 hover:bg-th-surface-hover transition-colors cursor-pointer disabled:opacity-25 disabled:cursor-default";
+  return (
+    <div className="flex items-center gap-1">
+      <button type="button" disabled={page <= 1} onClick={() => onPageChange(page - 1)} className={navBtn} title="Previous page">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="15 18 9 12 15 6" /></svg>
+      </button>
+      <span className="text-xs text-th-text-muted tabular-nums min-w-[2.5rem] text-center">{page}/{pageCount}</span>
+      <button type="button" disabled={page >= pageCount} onClick={() => onPageChange(page + 1)} className={navBtn} title="Next page">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6" /></svg>
+      </button>
+    </div>
+  );
+}
+
 /* ── PDF ── */
-function PdfView({ url, onPageChange }: { url: string; onPageChange?: (page: number) => void }) {
+function PdfView({ url, page, onPageChange, onPageCountChange }: { url: string; page?: number; onPageChange?: (page: number) => void; onPageCountChange?: (count: number) => void }) {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const [pageCount, setPageCount] = useState(0);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [internalPage, setInternalPage] = useState(1);
+  const currentPage = page ?? internalPage;
   const [error, setError] = useState<string | null>(null);
   const pdfDocRef = useRef<PdfDocument | null>(null);
 
@@ -206,7 +226,7 @@ function PdfView({ url, onPageChange }: { url: string; onPageChange?: (page: num
     let cancelled = false;
     setError(null);
     setPageCount(0);
-    setCurrentPage(1);
+    setInternalPage(1);
     pdfDocRef.current = null;
     // Clear old canvas
     if (canvasContainerRef.current) {
@@ -221,7 +241,9 @@ function PdfView({ url, onPageChange }: { url: string; onPageChange?: (page: num
         if (cancelled) return;
         pdfDocRef.current = pdf as unknown as PdfDocument;
         setPageCount(pdf.numPages);
-        setCurrentPage(1);
+        setInternalPage(1);
+        onPageCountChange?.(pdf.numPages);
+        onPageChange?.(1);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load PDF");
       }
@@ -259,11 +281,6 @@ function PdfView({ url, onPageChange }: { url: string; onPageChange?: (page: num
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 px-4 py-1.5 border-b border-th-border flex-shrink-0">
-        <button disabled={currentPage <= 1} onClick={() => { setCurrentPage(p => p - 1); onPageChange?.(currentPage - 1); }} className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface">{"\u2190"}</button>
-        <span className="text-xs text-th-text-muted">{currentPage} / {pageCount}</span>
-        <button disabled={currentPage >= pageCount} onClick={() => { setCurrentPage(p => p + 1); onPageChange?.(currentPage + 1); }} className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface">{"\u2192"}</button>
-      </div>
       <div ref={canvasContainerRef} className="flex-1 overflow-auto p-2" />
     </div>
   );
@@ -416,14 +433,13 @@ function DirView({ entries, dirPath, onNavigate }: {
 }
 
 /* ── Main viewer ── */
-export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigate, onPdfPageChange }: FileViewerProps) {
+export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigate, pdfPage, onPdfPageChange, onPdfPageCountChange }: FileViewerProps) {
   const [content, setContent] = useState<string | null>(null);
   const [binaryData, setBinaryData] = useState<ArrayBuffer | null>(null);
   const [dirEntries, setDirEntries] = useState<{ name: string; path: string; is_dir: boolean }[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [stale, setStale] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [pdfPage, setPdfPage] = useState(1);
 
   const isDir = filePath.endsWith("/");
   const fileName = filePath.split("/").filter(Boolean).pop() || filePath;
@@ -504,7 +520,7 @@ export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigat
         {loading ? (
           <p className="p-4 text-sm text-th-text-muted">Loading...</p>
         ) : isPdf ? (
-          <PdfView url={fileUrl} onPageChange={(p) => { setPdfPage(p); onPdfPageChange?.(p); }} />
+          <PdfView url={fileUrl} page={pdfPage} onPageChange={onPdfPageChange} onPageCountChange={onPdfPageCountChange} />
         ) : isEml ? (
           <EmlViewer sessionId={sessionId} filePath={filePath} onClose={hideHeader ? undefined : onClose} />
         ) : (
