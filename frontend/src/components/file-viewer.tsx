@@ -204,6 +204,15 @@ function PdfView({ url, onPageChange }: { url: string; onPageChange?: (page: num
 
   useEffect(() => {
     let cancelled = false;
+    setError(null);
+    setPageCount(0);
+    setCurrentPage(1);
+    pdfDocRef.current = null;
+    // Clear old canvas
+    if (canvasContainerRef.current) {
+      const old = canvasContainerRef.current.querySelector("canvas");
+      if (old) old.remove();
+    }
     (async () => {
       try {
         const pdfjsLib = await import("pdfjs-dist");
@@ -243,7 +252,7 @@ function PdfView({ url, onPageChange }: { url: string; onPageChange?: (page: num
       await page.render({ canvasContext: ctx, viewport }).promise;
     })();
     return () => { cancelled = true; };
-  }, [currentPage, pageCount]);
+  }, [currentPage, pageCount]); // eslint-disable-line react-hooks/exhaustive-deps -- url changes reset pageCount which triggers this
 
   if (error) return <p className="p-4 text-sm text-red-600">{error}</p>;
   if (pageCount === 0) return <p className="p-4 text-sm text-th-text-muted">Loading PDF...</p>;
@@ -490,31 +499,37 @@ export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigat
         </button>
       )}
       {/* Action buttons handled by parent (artifacts-pane header or files-tab header) */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 flex flex-col min-h-0">
+        {/* Fill-height viewers (manage their own layout) */}
         {loading ? (
           <p className="p-4 text-sm text-th-text-muted">Loading...</p>
-        ) : isDir && dirEntries !== null ? (
-          <DirView entries={dirEntries} dirPath={filePath} onNavigate={onNavigate || onClose} />
         ) : isPdf ? (
           <PdfView url={fileUrl} onPageChange={(p) => { setPdfPage(p); onPdfPageChange?.(p); }} />
-        ) : isZip && binaryData ? (
-          <ZipView data={binaryData} />
-        ) : isSpreadsheet && binaryData ? (
-          <SpreadsheetView data={binaryData} />
-        ) : isImage ? (
-          <div className="p-4"><img src={fileUrl} alt={fileName} className="max-w-full rounded border border-th-border" /></div>
         ) : isEml ? (
           <EmlViewer sessionId={sessionId} filePath={filePath} onClose={hideHeader ? undefined : onClose} />
-        ) : isThreadJson && content !== null ? (
-          <ThreadJsonView content={content} sessionId={sessionId} />
-        ) : isMd && content !== null ? (
-          <MarkdownView content={content} />
-        ) : content !== null ? (
-          <pre className="whitespace-pre-wrap p-4 text-xs font-mono text-th-text">{content}</pre>
         ) : (
-          <div className="p-4 text-center text-sm text-th-text-muted">
-            <p className="mb-2">Cannot preview .{ext} files</p>
-            <DownloadLink sessionId={sessionId} filePath={filePath} label={`Download ${fileName}`} />
+          /* Scrollable viewers */
+          <div className="flex-1 overflow-auto">
+            {isDir && dirEntries !== null ? (
+              <DirView entries={dirEntries} dirPath={filePath} onNavigate={onNavigate || onClose} />
+            ) : isZip && binaryData ? (
+              <ZipView data={binaryData} />
+            ) : isSpreadsheet && binaryData ? (
+              <SpreadsheetView data={binaryData} />
+            ) : isImage ? (
+              <div className="p-4"><img src={fileUrl} alt={fileName} className="max-w-full rounded border border-th-border" /></div>
+            ) : isThreadJson && content !== null ? (
+              <ThreadJsonView content={content} sessionId={sessionId} />
+            ) : isMd && content !== null ? (
+              <MarkdownView content={content} />
+            ) : content !== null ? (
+              <pre className="whitespace-pre-wrap p-4 text-xs font-mono text-th-text">{content}</pre>
+            ) : (
+              <div className="p-4 text-center text-sm text-th-text-muted">
+                <p className="mb-2">Cannot preview .{ext} files</p>
+                <DownloadLink sessionId={sessionId} filePath={filePath} label={`Download ${fileName}`} />
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -246,7 +246,6 @@ export default function Chat() {
   const [viewingImages, setViewingImages] = useState<{ images: string[]; index: number } | null>(null);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
   const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
-  const [draftInput, setDraftInput] = useState("");
   const [themeId, setThemeId] = useState("light");
   const [showSettings, setShowSettings] = useState(false);
   const [uploadDrag, setUploadDrag] = useState(false);
@@ -500,8 +499,10 @@ export default function Chat() {
         // Always reset isAnswering once we get a poll response back
         setIsAnswering(false);
 
-        // Clear pending message once the JSONL reflects it
-        setPendingMessage(null);
+        // Clear pending message once Claude has picked it up (status past "pending")
+        if (run.status !== "pending") {
+          setPendingMessage(null);
+        }
 
         if (run.status === "completed") {
           appendAssistantMessage(run, "");
@@ -992,8 +993,6 @@ export default function Chat() {
                 onFilesUploaded={() => { const sid = activeSessionRef.current; if (sid) void fetchFiles(sid); }}
                 sessionFiles={files}
                 isWorking={isLoading}
-                externalInput={draftInput}
-                onInputChange={setDraftInput}
                 onInterrupt={() => {
                   if (activeSession) {
                     void import("@/lib/api").then(({ interruptSession }) =>
