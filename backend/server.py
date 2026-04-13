@@ -781,9 +781,19 @@ def eml_html(session_id: str, path: str):
     for cid, data_url in images.items():
         html_body = html_body.replace(f"cid:{cid}", data_url)
 
-    # Wrap with Gmail-like font
+    # Wrap with Gmail-like font + hide broken external images
     full_html = f"""<!DOCTYPE html>
-<html><head><style>body {{ font-family: Roboto, 'Google Sans', Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #202124; margin: 8px; }}</style></head>
+<html><head><style>
+body {{ font-family: Roboto, 'Google Sans', Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #202124; margin: 8px; }}
+img[src^="http"] {{ max-width: 100%; }}
+</style>
+<script>document.addEventListener('DOMContentLoaded', () => {{
+  document.querySelectorAll('img').forEach(img => {{
+    img.onerror = () => {{ img.style.display = 'none'; }};
+    if (img.complete && img.naturalWidth === 0 && img.src.startsWith('http')) img.style.display = 'none';
+  }});
+}});</script>
+</head>
 <body>{html_body}</body></html>"""
 
     return HTTPResponse(content=full_html, media_type="text/html")
