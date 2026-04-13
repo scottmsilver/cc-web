@@ -250,9 +250,9 @@ function PdfView({ url }: { url: string }) {
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-4 py-1.5 border-b border-th-border flex-shrink-0">
-        <button disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)} className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface">\u2190</button>
+        <button disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)} className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface">{"\u2190"}</button>
         <span className="text-xs text-th-text-muted">{currentPage} / {pageCount}</span>
-        <button disabled={currentPage >= pageCount} onClick={() => setCurrentPage(p => p + 1)} className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface">\u2192</button>
+        <button disabled={currentPage >= pageCount} onClick={() => setCurrentPage(p => p + 1)} className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface">{"\u2192"}</button>
       </div>
       <div ref={canvasContainerRef} className="flex-1 overflow-auto p-2" />
     </div>
@@ -411,6 +411,8 @@ export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigat
   const [binaryData, setBinaryData] = useState<ArrayBuffer | null>(null);
   const [dirEntries, setDirEntries] = useState<{ name: string; path: string; is_dir: boolean }[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [stale, setStale] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const isDir = filePath.endsWith("/");
   const fileName = filePath.split("/").filter(Boolean).pop() || filePath;
@@ -431,6 +433,7 @@ export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigat
     setContent(null);
     setBinaryData(null);
     setDirEntries(null);
+    setStale(false);
 
     if (isDir) {
       fetch(fileUrl).then(r => r.json()).then(d => { setDirEntries(d.entries || []); setLoading(false); }).catch(() => { setDirEntries([]); setLoading(false); });
@@ -441,10 +444,31 @@ export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigat
     } else {
       setLoading(false);
     }
-  }, [sessionId, filePath, isDir, needsBinary, needsText, fileUrl]);
+  }, [sessionId, filePath, isDir, needsBinary, needsText, fileUrl, refreshKey]);
+
+  // Poll for file changes via lightweight mtime endpoint
+  useEffect(() => {
+    if (isDir || isEml || loading) return;
+    const mtimeUrl = fileUrl.replace("/files/", "/file-mtime/");
+    // Capture initial mtime
+    let initialMtime: number | null = null;
+    fetch(mtimeUrl).then(r => r.json()).then(d => { initialMtime = d.mtime; }).catch(() => {});
+
+    const interval = setInterval(async () => {
+      if (initialMtime === null) return;
+      try {
+        const r = await fetch(mtimeUrl);
+        const d = await r.json();
+        if (d.mtime && d.mtime !== initialMtime) {
+          setStale(true);
+        }
+      } catch { /* ignore */ }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [fileUrl, isDir, isEml, loading, refreshKey]);
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
+    <div className="flex flex-1 flex-col overflow-hidden relative">
       {!hideHeader && !isEml && (
         <div className="flex items-center gap-3 px-4 py-2 border-b border-th-border">
           <button onClick={onClose} className="text-th-text-muted hover:text-th-text text-sm cursor-pointer">{"\u2190"} Back</button>
@@ -452,6 +476,18 @@ export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigat
           {!isDir && <DownloadLink sessionId={sessionId} filePath={filePath} />}
         </div>
       )}
+      {/* File updated toast — bottom-right, Gmail style */}
+      {stale && (
+        <button
+          onClick={() => { setStale(false); setRefreshKey((k) => k + 1); }}
+          className="absolute bottom-4 right-4 z-20 flex items-center gap-2 px-4 py-2.5 rounded-lg bg-th-bg border border-th-accent/40 shadow-lg text-xs text-th-accent hover:bg-th-surface transition-all animate-in fade-in slide-in-from-bottom-2"
+        >
+          <span className="w-2 h-2 rounded-full bg-th-accent animate-pulse" />
+          <span>File updated</span>
+          <span className="font-medium underline underline-offset-2">Refresh</span>
+        </button>
+      )}
+      {/* Action buttons handled by parent (artifacts-pane header or files-tab header) */}
       <div className="flex-1 overflow-auto">
         {loading ? (
           <p className="p-4 text-sm text-th-text-muted">Loading...</p>
