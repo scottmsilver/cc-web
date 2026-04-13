@@ -142,7 +142,7 @@ export function EmlViewer({ sessionId, filePath, onClose }: { sessionId: string;
         {activeTab === "html" && html_body && (
           <div className="flex-1 flex flex-col p-2 min-h-0">
             <iframe
-              srcDoc={`${GMAIL_STYLE}${html_body}`}
+              src={`${CCHOST_API}/api/sessions/${encodeURIComponent(sessionId)}/eml-html/${filePath.split("/").map(encodeURIComponent).join("/")}`}
               className="flex-1 w-full border border-th-border rounded bg-white min-h-0"
               sandbox="allow-same-origin"
               title="Email HTML"

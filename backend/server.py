@@ -730,6 +730,65 @@ def list_files(session_id: str):
     return {"files": session.files()}
 
 
+@app.get("/api/sessions/{session_id}/eml-html/{path:path}")
+def eml_html(session_id: str, path: str):
+    """Serve the rendered HTML body of an EML file with inline images resolved."""
+    import email
+    import email.policy
+
+    session = _get_session_or_404(session_id)
+    try:
+        data = session.read_file(path)
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    msg = email.message_from_bytes(data, policy=email.policy.default)
+
+    # Find HTML body and inline images
+    html_body = None
+    images: dict[str, str] = {}  # cid -> data URL
+
+    def _walk(part):
+        nonlocal html_body
+        ct = part.get_content_type()
+        if part.is_multipart():
+            for child in part.iter_parts():
+                _walk(child)
+            return
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            return
+        if ct == "text/html" and html_body is None:
+            charset = part.get_content_charset() or "utf-8"
+            try:
+                html_body = payload.decode(charset, errors="replace")
+            except (LookupError, UnicodeDecodeError):
+                html_body = payload.decode("utf-8", errors="replace")
+        elif ct.startswith("image/"):
+            import base64 as b64mod
+
+            cid = (part.get("Content-ID") or "").strip("<>")
+            if cid:
+                data_url = f"data:{ct};base64,{b64mod.b64encode(payload).decode('ascii')}"
+                images[cid] = data_url
+
+    _walk(msg)
+
+    if not html_body:
+        return HTTPResponse(content="<p>No HTML body</p>", media_type="text/html")
+
+    # Replace cid: references
+    for cid, data_url in images.items():
+        html_body = html_body.replace(f"cid:{cid}", data_url)
+
+    # Wrap with Gmail-like font
+    full_html = f"""<!DOCTYPE html>
+<html><head><style>body {{ font-family: Roboto, 'Google Sans', Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #202124; margin: 8px; }}</style></head>
+<body>{html_body}</body></html>"""
+
+    return HTTPResponse(content=full_html, media_type="text/html")
+
+
 @app.get("/api/sessions/{session_id}/eml/{path:path}")
 def parse_eml(session_id: str, path: str):
     """Parse an EML file server-side and return structured parts as JSON."""
