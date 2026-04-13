@@ -9,6 +9,7 @@ import { ImageGalleryViewer } from "@/components/image-gallery-viewer";
 import { ResizablePanel } from "@/components/resizable-panel";
 import { themes, getTheme, applyTheme, loadSavedThemeId } from "@/lib/themes";
 import { FileViewer } from "@/components/file-viewer";
+import { FileActionButtons } from "@/components/file-actions";
 import { JsonlChat } from "@/components/jsonl-chat";
 import { PendingQuestionCard } from "@/components/pending-question-card";
 import { QuestionCard } from "@/components/question-card";
@@ -72,6 +73,7 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile, downloadF
   downloadFile: (path: string) => void;
 }) {
   const [listWidth, setListWidth] = useState(280);
+  const [pdfPage, setPdfPage] = useState(1);
   const dragging = useRef(false);
 
   const onMouseDown = useCallback(() => {
@@ -134,11 +136,18 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile, downloadF
       />
       {viewingFile && activeSession ? (
         <div className="flex-1 min-w-0 flex flex-col">
+          {!viewingFile.endsWith("/") && (
+            <div className="flex items-center gap-1 px-2 py-1.5 border-b border-th-border bg-th-surface flex-shrink-0">
+              <span className="flex-1 text-xs font-mono text-th-text-muted truncate" title={viewingFile}>{viewingFile.split("/").pop()}</span>
+              <FileActionButtons sessionId={activeSession} filePath={viewingFile} pdfPage={pdfPage} />
+            </div>
+          )}
           <FileViewer
             sessionId={activeSession}
             filePath={viewingFile}
             onClose={() => setViewingFile(null)}
             onNavigate={(path) => setViewingFile(path)}
+            onPdfPageChange={setPdfPage}
             hideHeader
           />
         </div>
