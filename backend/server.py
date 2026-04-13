@@ -781,19 +781,44 @@ def eml_html(session_id: str, path: str):
     for cid, data_url in images.items():
         html_body = html_body.replace(f"cid:{cid}", data_url)
 
-    # Wrap with Gmail-like font + hide broken external images
+    # Fetch external images and inline them (uses stored OAuth if available)
+    import re as _re
+
+    import requests as _req
+
+    external_urls = set(_re.findall(r'src="(https?://[^"]+)"', html_body))
+    if external_urls:
+        # Try to use Google OAuth token for googleusercontent.com URLs
+        headers = {}
+        try:
+            tm = google_service.TokenManager()
+            creds = tm.load()
+            if creds:
+                creds = tm.refresh_if_needed(creds)
+                if creds and hasattr(creds, "token"):
+                    headers["Authorization"] = f"Bearer {creds.token}"
+        except Exception:
+            pass
+
+        for ext_url in external_urls:
+            try:
+                use_auth = "google" in ext_url and headers
+                r = _req.get(ext_url, headers=headers if use_auth else {}, timeout=5)
+                if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"):
+                    import base64 as _b64
+
+                    ct = r.headers["content-type"].split(";")[0]
+                    data_url = f"data:{ct};base64,{_b64.b64encode(r.content).decode('ascii')}"
+                    html_body = html_body.replace(ext_url, data_url)
+            except Exception:
+                pass  # Leave original URL if fetch fails
+
+    # Wrap with Gmail-like font
     full_html = f"""<!DOCTYPE html>
 <html><head><style>
 body {{ font-family: Roboto, 'Google Sans', Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #202124; margin: 8px; }}
-img[src^="http"] {{ max-width: 100%; }}
-</style>
-<script>document.addEventListener('DOMContentLoaded', () => {{
-  document.querySelectorAll('img').forEach(img => {{
-    img.onerror = () => {{ img.style.display = 'none'; }};
-    if (img.complete && img.naturalWidth === 0 && img.src.startsWith('http')) img.style.display = 'none';
-  }});
-}});</script>
-</head>
+img {{ max-width: 100%; }}
+</style></head>
 <body>{html_body}</body></html>"""
 
     return HTTPResponse(content=full_html, media_type="text/html")
