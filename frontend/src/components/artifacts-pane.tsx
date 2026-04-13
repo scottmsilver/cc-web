@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { FileViewer, PdfPageNav } from "@/components/file-viewer";
+import { FileViewer, PdfPageNav, PdfSidebarToggle } from "@/components/file-viewer";
 import { FileActionButtons } from "@/components/file-actions";
 import { getFileUrl } from "@/lib/api";
 
@@ -35,6 +35,7 @@ export function ArtifactsPane({
   const isPdf = selectedFile.endsWith(".pdf");
   const [pdfPage, setPdfPage] = useState(1);
   const [pdfPageCount, setPdfPageCount] = useState(0);
+  const [pdfSidebar, setPdfSidebar] = useState(false);
 
   return (
     <div className="flex flex-col h-full border-l border-th-border overflow-hidden">
@@ -60,6 +61,7 @@ export function ArtifactsPane({
             );
           })}
         </select>
+        {isPdf && pdfPageCount > 1 && <PdfSidebarToggle open={pdfSidebar} onToggle={() => setPdfSidebar(v => !v)} />}
         {isPdf && <PdfPageNav page={pdfPage} pageCount={pdfPageCount} onPageChange={setPdfPage} />}
         {!isDir && <FileActionButtons sessionId={sessionId} filePath={selectedFile} pdfPage={pdfPage} />}
         <button
@@ -71,7 +73,7 @@ export function ArtifactsPane({
         </button>
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
-        <FileViewer sessionId={sessionId} filePath={selectedFile} onClose={onClose} hideHeader onNavigate={onSelectFile} onPdfPageChange={setPdfPage} onPdfPageCountChange={setPdfPageCount} />
+        <FileViewer sessionId={sessionId} filePath={selectedFile} onClose={onClose} hideHeader onNavigate={onSelectFile} pdfPage={pdfPage} onPdfPageChange={setPdfPage} onPdfPageCountChange={setPdfPageCount} pdfSidebarOpen={pdfSidebar} />
       </div>
     </div>
   );

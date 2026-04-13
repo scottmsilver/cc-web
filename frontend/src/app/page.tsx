@@ -8,7 +8,7 @@ import { ArtifactsPane } from "@/components/artifacts-pane";
 import { ImageGalleryViewer } from "@/components/image-gallery-viewer";
 import { ResizablePanel } from "@/components/resizable-panel";
 import { themes, getTheme, applyTheme, loadSavedThemeId } from "@/lib/themes";
-import { FileViewer, PdfPageNav } from "@/components/file-viewer";
+import { FileViewer, PdfPageNav, PdfSidebarToggle } from "@/components/file-viewer";
 import { FileActionButtons } from "@/components/file-actions";
 import { JsonlChat } from "@/components/jsonl-chat";
 import { PendingQuestionCard } from "@/components/pending-question-card";
@@ -75,6 +75,7 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile, downloadF
   const [listWidth, setListWidth] = useState(280);
   const [pdfPage, setPdfPage] = useState(1);
   const [pdfPageCount, setPdfPageCount] = useState(0);
+  const [pdfSidebar, setPdfSidebar] = useState(false);
   const dragging = useRef(false);
 
   const onMouseDown = useCallback(() => {
@@ -128,6 +129,7 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile, downloadF
           {!viewingFile.endsWith("/") && (
             <div className="flex items-center gap-1 px-2 py-1.5 border-b border-th-border bg-th-surface flex-shrink-0">
               <span className="flex-1 text-xs font-mono text-th-text-muted truncate" title={viewingFile}>{viewingFile.split("/").pop()}</span>
+              {viewingFile.endsWith(".pdf") && pdfPageCount > 1 && <PdfSidebarToggle open={pdfSidebar} onToggle={() => setPdfSidebar(v => !v)} />}
               {viewingFile.endsWith(".pdf") && <PdfPageNav page={pdfPage} pageCount={pdfPageCount} onPageChange={setPdfPage} />}
               <FileActionButtons sessionId={activeSession} filePath={viewingFile} pdfPage={pdfPage} />
             </div>
@@ -137,8 +139,10 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile, downloadF
             filePath={viewingFile}
             onClose={() => setViewingFile(null)}
             onNavigate={(path) => setViewingFile(path)}
+            pdfPage={pdfPage}
             onPdfPageChange={setPdfPage}
             onPdfPageCountChange={setPdfPageCount}
+            pdfSidebarOpen={pdfSidebar}
             hideHeader
           />
         </div>

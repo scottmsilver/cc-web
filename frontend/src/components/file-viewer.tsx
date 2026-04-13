@@ -17,6 +17,7 @@ type FileViewerProps = {
   pdfPage?: number;
   onPdfPageChange?: (page: number) => void;
   onPdfPageCountChange?: (count: number) => void;
+  pdfSidebarOpen?: boolean;
 };
 
 type PdfDocument = {
@@ -196,6 +197,25 @@ function SpreadsheetView({ data }: { data: ArrayBuffer }) {
   );
 }
 
+/** Sidebar toggle button for PDF thumbnail panel. */
+export function PdfSidebarToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="w-7 h-7 flex items-center justify-center rounded border border-th-border text-th-text-muted hover:text-th-accent hover:border-th-accent/50 hover:bg-th-surface-hover transition-colors cursor-pointer"
+      title={open ? "Hide thumbnails" : "Show thumbnails"}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <rect x="3" y="3" width="6" height="18" rx="1" />
+        <line x1="13" y1="6" x2="21" y2="6" />
+        <line x1="13" y1="12" x2="21" y2="12" />
+        <line x1="13" y1="18" x2="21" y2="18" />
+      </svg>
+    </button>
+  );
+}
+
 /** Compact PDF page navigation for use in toolbar headers. */
 export function PdfPageNav({ page, pageCount, onPageChange }: { page: number; pageCount: number; onPageChange: (p: number) => void }) {
   if (pageCount <= 1) return null;
@@ -213,75 +233,316 @@ export function PdfPageNav({ page, pageCount, onPageChange }: { page: number; pa
   );
 }
 
-/* ── PDF ── */
-function PdfView({ url, page, onPageChange, onPageCountChange }: { url: string; page?: number; onPageChange?: (page: number) => void; onPageCountChange?: (count: number) => void }) {
-  const canvasContainerRef = useRef<HTMLDivElement>(null);
-  const [pageCount, setPageCount] = useState(0);
-  const [internalPage, setInternalPage] = useState(1);
-  const currentPage = page ?? internalPage;
-  const [error, setError] = useState<string | null>(null);
-  const pdfDocRef = useRef<PdfDocument | null>(null);
+/* ── PDF: Page slot (lazy-rendered single page) ── */
+type PageViewport = { width: number; height: number };
 
-  useEffect(() => {
-    let cancelled = false;
-    setError(null);
-    setPageCount(0);
-    setInternalPage(1);
-    pdfDocRef.current = null;
-    // Clear old canvas
-    if (canvasContainerRef.current) {
-      const old = canvasContainerRef.current.querySelector("canvas");
-      if (old) old.remove();
-    }
-    (async () => {
-      try {
-        const pdfjsLib = await import("pdfjs-dist");
-        pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
-        const pdf = await pdfjsLib.getDocument(url).promise;
-        if (cancelled) return;
-        pdfDocRef.current = pdf as unknown as PdfDocument;
-        setPageCount(pdf.numPages);
-        setInternalPage(1);
-        onPageCountChange?.(pdf.numPages);
-        onPageChange?.(1);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load PDF");
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [url]);
+function PdfPageSlot({
+  pageNum,
+  pdfDoc,
+  containerWidth,
+  vp,
+  visible,
+}: {
+  pageNum: number;
+  pdfDoc: PdfDocument;
+  containerWidth: number;
+  vp: PageViewport;
+  visible: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const renderedForWidth = useRef(0);
 
+  const scale = Math.max(containerWidth - 16, 100) / vp.width;
+  const height = vp.height * scale;
+
+  // Render when visible and not yet rendered at this width
   useEffect(() => {
-    if (!pdfDocRef.current || !canvasContainerRef.current) return;
+    if (!visible || renderedForWidth.current === containerWidth) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
     let cancelled = false;
     (async () => {
-      const pdf = pdfDocRef.current!;
-      const page = await pdf.getPage(currentPage);
+      const page = await pdfDoc.getPage(pageNum);
       if (cancelled) return;
-      const container = canvasContainerRef.current!;
-      const containerWidth = container.clientWidth - 16;
-      const unscaledViewport = page.getViewport({ scale: 1 });
-      const scale = containerWidth / unscaledViewport.width;
       const viewport = page.getViewport({ scale });
-
-      let canvas = container.querySelector("canvas");
-      if (!canvas) { canvas = document.createElement("canvas"); container.appendChild(canvas); }
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       canvas.style.width = "100%";
       canvas.style.height = "auto";
       const ctx = canvas.getContext("2d")!;
       await page.render({ canvasContext: ctx, viewport }).promise;
+      if (!cancelled) renderedForWidth.current = containerWidth;
     })();
     return () => { cancelled = true; };
-  }, [currentPage, pageCount]); // eslint-disable-line react-hooks/exhaustive-deps -- url changes reset pageCount which triggers this
-
-  if (error) return <p className="p-4 text-sm text-red-600">{error}</p>;
-  if (pageCount === 0) return <p className="p-4 text-sm text-th-text-muted">Loading PDF...</p>;
+  }, [visible, containerWidth, pdfDoc, pageNum, scale]);
 
   return (
-    <div className="flex flex-col h-full">
-      <div ref={canvasContainerRef} className="flex-1 overflow-auto p-2" />
+    <div
+      data-page={pageNum}
+      className="relative flex-shrink-0 bg-white rounded shadow-sm"
+      style={{ height, width: "100%" }}
+    >
+      <canvas ref={canvasRef} className="absolute inset-0" />
+      <span className="absolute bottom-1 right-2 text-[10px] text-gray-400 select-none">{pageNum}</span>
+    </div>
+  );
+}
+
+/* ── PDF: Thumbnail sidebar ── */
+function PdfThumbnailSidebar({
+  pdfDoc,
+  pageCount,
+  viewports,
+  currentPage,
+  onPageClick,
+}: {
+  pdfDoc: PdfDocument;
+  pageCount: number;
+  viewports: PageViewport[];
+  currentPage: number;
+  onPageClick: (page: number) => void;
+}) {
+  const thumbsRef = useRef<Map<number, HTMLCanvasElement>>(new Map());
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [rendered, setRendered] = useState(0);
+
+  // Render thumbnails progressively
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (let i = 1; i <= pageCount; i++) {
+        if (cancelled) break;
+        const page = await pdfDoc.getPage(i);
+        if (cancelled) break;
+        const vp = viewports[i - 1];
+        if (!vp) continue;
+        const thumbScale = 80 / vp.width;
+        const viewport = page.getViewport({ scale: thumbScale });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext("2d")!;
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        if (cancelled) break;
+        thumbsRef.current.set(i, canvas);
+        setRendered(i);
+        // Yield between pages
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pdfDoc, pageCount, viewports]);
+
+  // Auto-scroll to keep active thumbnail visible
+  useEffect(() => {
+    const el = containerRef.current?.querySelector(`[data-thumb="${currentPage}"]`);
+    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [currentPage]);
+
+  return (
+    <div ref={containerRef} className="w-[100px] overflow-y-auto flex-shrink-0 py-2 px-1.5 space-y-1.5 bg-th-surface">
+      {Array.from({ length: pageCount }, (_, i) => {
+        const p = i + 1;
+        const vp = viewports[i];
+        const thumbH = vp ? (80 / vp.width) * vp.height : 100;
+        const isActive = p === currentPage;
+        return (
+          <button
+            key={p}
+            type="button"
+            data-thumb={p}
+            onClick={() => onPageClick(p)}
+            className={`block w-full rounded overflow-hidden border-2 transition-colors ${
+              isActive ? "border-th-accent" : "border-transparent hover:border-th-border"
+            }`}
+            title={`Page ${p}`}
+          >
+            {rendered >= p ? (
+              <canvas
+                className="w-full"
+                style={{ height: thumbH }}
+                ref={(el) => {
+                  if (el && thumbsRef.current.has(p)) {
+                    const src = thumbsRef.current.get(p)!;
+                    el.width = src.width;
+                    el.height = src.height;
+                    el.getContext("2d")!.drawImage(src, 0, 0);
+                  }
+                }}
+              />
+            ) : (
+              <div className="bg-th-surface-hover flex items-center justify-center text-[10px] text-th-text-faint" style={{ height: thumbH }}>
+                {p}
+              </div>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── PDF: Main viewer (orchestrator) ── */
+function PdfView({ url, page, onPageChange, onPageCountChange, sidebarOpen }: { url: string; page?: number; onPageChange?: (page: number) => void; onPageCountChange?: (count: number) => void; sidebarOpen?: boolean }) {
+  const [pdfDoc, setPdfDoc] = useState<PdfDocument | null>(null);
+  const [pageCount, setPageCount] = useState(0);
+  const [viewports, setViewports] = useState<PageViewport[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const showSidebar = sidebarOpen ?? false;
+  const [containerWidth, setContainerWidth] = useState(600);
+  const [error, setError] = useState<string | null>(null);
+  const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set());
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const programmaticScroll = useRef(false);
+
+  // Load PDF and collect all page viewports
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    setPdfDoc(null);
+    setPageCount(0);
+    setViewports([]);
+    setCurrentPage(1);
+    (async () => {
+      try {
+        const pdfjsLib = await import("pdfjs-dist");
+        pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+        const pdf = await pdfjsLib.getDocument(url).promise;
+        if (cancelled) return;
+        const doc = pdf as unknown as PdfDocument;
+        const vps: PageViewport[] = [];
+        for (let i = 1; i <= doc.numPages; i++) {
+          const p = await doc.getPage(i);
+          const v = p.getViewport({ scale: 1 });
+          vps.push({ width: v.width, height: v.height });
+        }
+        if (cancelled) return;
+        setPdfDoc(doc);
+        setPageCount(doc.numPages);
+        setViewports(vps);
+        onPageCountChange?.(doc.numPages);
+        onPageChange?.(1);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load PDF");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [url]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Observe page slots for lazy rendering
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container || pageCount === 0) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        setVisiblePages((prev) => {
+          const next = new Set(prev);
+          for (const entry of entries) {
+            const p = parseInt((entry.target as HTMLElement).dataset.page || "0", 10);
+            if (p > 0) {
+              if (entry.isIntersecting) next.add(p);
+              // Don't remove — once visible, stay rendered (keep canvas alive)
+            }
+          }
+          return next.size !== prev.size ? next : prev;
+        });
+      },
+      { root: container, rootMargin: "200% 0px" },
+    );
+    // Observe all page slots after they mount
+    requestAnimationFrame(() => {
+      container.querySelectorAll<HTMLElement>("[data-page]").forEach((el) => obs.observe(el));
+    });
+    return () => obs.disconnect();
+  }, [pageCount]);
+
+  // Track container width for responsive scaling
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const ro = new ResizeObserver(([entry]) => {
+      setContainerWidth(entry.contentRect.width);
+    });
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, []);
+
+  // Detect current page from scroll position
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container || pageCount === 0) return;
+    const onScroll = () => {
+      if (programmaticScroll.current) return;
+      const slots = container.querySelectorAll<HTMLElement>("[data-page]");
+      const containerTop = container.scrollTop;
+      const threshold = container.clientHeight * 0.3;
+      let best = 1;
+      for (const slot of slots) {
+        const slotTop = slot.offsetTop - container.offsetTop;
+        if (slotTop <= containerTop + threshold) {
+          best = parseInt(slot.dataset.page || "1", 10);
+        }
+      }
+      if (best !== currentPage) {
+        setCurrentPage(best);
+        onPageChange?.(best);
+      }
+    };
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => container.removeEventListener("scroll", onScroll);
+  }, [pageCount, currentPage, onPageChange]);
+
+  // Scroll to page when parent changes the page prop
+  useEffect(() => {
+    if (!page || page === currentPage || !scrollRef.current) return;
+    scrollToPage(page);
+  }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const scrollToPage = (p: number) => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const slot = container.querySelector<HTMLElement>(`[data-page="${p}"]`);
+    if (!slot) return;
+    programmaticScroll.current = true;
+    container.scrollTo({ top: slot.offsetTop - container.offsetTop, behavior: "smooth" });
+    setCurrentPage(p);
+    onPageChange?.(p);
+    setTimeout(() => { programmaticScroll.current = false; }, 500);
+  };
+
+  if (error) return <p className="p-4 text-sm text-red-600">{error}</p>;
+  if (!pdfDoc || pageCount === 0) return <p className="p-4 text-sm text-th-text-muted">Loading PDF...</p>;
+
+  return (
+    <div className="flex h-full">
+      {/* Thumbnail sidebar */}
+      {showSidebar && pdfDoc && (
+        <>
+          <PdfThumbnailSidebar
+            pdfDoc={pdfDoc}
+            pageCount={pageCount}
+            viewports={viewports}
+            currentPage={currentPage}
+            onPageClick={scrollToPage}
+          />
+          <div className="w-px bg-th-border flex-shrink-0" />
+        </>
+      )}
+
+      {/* Scroll viewport with all pages */}
+      <div ref={scrollRef} className="flex-1 overflow-auto p-2 space-y-2">
+        {viewports.map((vp, i) => (
+          <PdfPageSlot
+            key={i + 1}
+            pageNum={i + 1}
+            pdfDoc={pdfDoc}
+            containerWidth={containerWidth}
+            vp={vp}
+            visible={visiblePages.has(i + 1)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -433,7 +694,7 @@ function DirView({ entries, dirPath, onNavigate }: {
 }
 
 /* ── Main viewer ── */
-export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigate, pdfPage, onPdfPageChange, onPdfPageCountChange }: FileViewerProps) {
+export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigate, pdfPage, onPdfPageChange, onPdfPageCountChange, pdfSidebarOpen }: FileViewerProps) {
   const [content, setContent] = useState<string | null>(null);
   const [binaryData, setBinaryData] = useState<ArrayBuffer | null>(null);
   const [dirEntries, setDirEntries] = useState<{ name: string; path: string; is_dir: boolean }[] | null>(null);
@@ -520,7 +781,7 @@ export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigat
         {loading ? (
           <p className="p-4 text-sm text-th-text-muted">Loading...</p>
         ) : isPdf ? (
-          <PdfView url={fileUrl} page={pdfPage} onPageChange={onPdfPageChange} onPageCountChange={onPdfPageCountChange} />
+          <PdfView url={fileUrl} page={pdfPage} onPageChange={onPdfPageChange} onPageCountChange={onPdfPageCountChange} sidebarOpen={pdfSidebarOpen} />
         ) : isEml ? (
           <EmlViewer sessionId={sessionId} filePath={filePath} onClose={hideHeader ? undefined : onClose} />
         ) : (
