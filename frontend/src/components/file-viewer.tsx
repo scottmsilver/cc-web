@@ -19,6 +19,7 @@ type FileViewerProps = {
   onPdfPageChange?: (page: number) => void;
   onPdfPageCountChange?: (count: number) => void;
   pdfSidebarOpen?: boolean;
+  pdfZoom?: PdfZoomMode;
 };
 
 type PdfDocument = {
@@ -217,6 +218,18 @@ export function PdfSidebarToggle({ open, onToggle }: { open: boolean; onToggle: 
   );
 }
 
+/** Zoom controls for PDF viewer. */
+export type PdfZoomMode = "fit-width" | "actual";
+export function PdfZoomControls({ zoom, onZoomChange }: { zoom: PdfZoomMode; onZoomChange: (z: PdfZoomMode) => void }) {
+  const btnCls = "h-7 flex items-center justify-center rounded border border-th-border text-th-text-muted hover:text-th-accent hover:border-th-accent/50 hover:bg-th-surface-hover transition-colors cursor-pointer text-[10px] px-2";
+  return (
+    <div className="flex items-center gap-1">
+      <button type="button" onClick={() => onZoomChange("fit-width")} className={`${btnCls} ${zoom === "fit-width" ? "bg-th-surface-hover text-th-accent border-th-accent/50" : ""}`} title="Fit to width">Fit</button>
+      <button type="button" onClick={() => onZoomChange("actual")} className={`${btnCls} ${zoom === "actual" ? "bg-th-surface-hover text-th-accent border-th-accent/50" : ""}`} title="Actual size (100%)">100%</button>
+    </div>
+  );
+}
+
 /** Compact PDF page navigation for use in toolbar headers. */
 export function PdfPageNav({ page, pageCount, onPageChange }: { page: number; pageCount: number; onPageChange: (p: number) => void }) {
   if (pageCount <= 1) return null;
@@ -243,22 +256,28 @@ function PdfPageSlot({
   containerWidth,
   vp,
   visible,
+  zoomMode,
 }: {
   pageNum: number;
   pdfDoc: PdfDocument;
   containerWidth: number;
   vp: PageViewport;
   visible: boolean;
+  zoomMode: PdfZoomMode;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const renderedForWidth = useRef(0);
+  const renderedKey = useRef("");
 
-  const scale = Math.max(containerWidth - 16, 100) / vp.width;
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  const fitScale = Math.max(containerWidth - 16, 100) / vp.width;
+  // PDF points are 72/inch, CSS pixels are 96/inch. Scale by 96/72 for true physical size.
+  const scale = zoomMode === "actual" ? 96 / 72 : fitScale;
+  const cssWidth = vp.width * scale;
   const height = vp.height * scale;
+  const cacheKey = `${containerWidth}-${zoomMode}`;
 
-  // Render when visible and not yet rendered at this width
   useEffect(() => {
-    if (!visible || renderedForWidth.current === containerWidth) return;
+    if (!visible || renderedKey.current === cacheKey) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -266,17 +285,19 @@ function PdfPageSlot({
     (async () => {
       const page = await pdfDoc.getPage(pageNum);
       if (cancelled) return;
-      const viewport = page.getViewport({ scale });
+      // Render at higher resolution for crisp text on HiDPI displays
+      const renderScale = scale * dpr;
+      const viewport = page.getViewport({ scale: renderScale });
       canvas.width = viewport.width;
       canvas.height = viewport.height;
-      canvas.style.width = "100%";
+      canvas.style.width = `${cssWidth}px`;
       canvas.style.height = "auto";
       const ctx = canvas.getContext("2d")!;
       await page.render({ canvasContext: ctx, viewport }).promise;
-      if (!cancelled) renderedForWidth.current = containerWidth;
+      if (!cancelled) renderedKey.current = cacheKey;
     })();
     return () => { cancelled = true; };
-  }, [visible, containerWidth, pdfDoc, pageNum, scale]);
+  }, [visible, cacheKey, pdfDoc, pageNum, scale, dpr, cssWidth]);
 
   return (
     <div
@@ -385,7 +406,7 @@ function PdfThumbnailSidebar({
 }
 
 /* ── PDF: Main viewer (orchestrator) ── */
-function PdfView({ url, page, onPageChange, onPageCountChange, sidebarOpen }: { url: string; page?: number; onPageChange?: (page: number) => void; onPageCountChange?: (count: number) => void; sidebarOpen?: boolean }) {
+function PdfView({ url, page, onPageChange, onPageCountChange, sidebarOpen, zoomMode = "fit-width" }: { url: string; page?: number; onPageChange?: (page: number) => void; onPageCountChange?: (count: number) => void; sidebarOpen?: boolean; zoomMode?: PdfZoomMode }) {
   const [pdfDoc, setPdfDoc] = useState<PdfDocument | null>(null);
   const [pageCount, setPageCount] = useState(0);
   const [viewports, setViewports] = useState<PageViewport[]>([]);
@@ -544,6 +565,7 @@ function PdfView({ url, page, onPageChange, onPageCountChange, sidebarOpen }: { 
             containerWidth={containerWidth}
             vp={vp}
             visible={visiblePages.has(i + 1)}
+            zoomMode={zoomMode}
           />
         ))}
       </div>
@@ -698,7 +720,7 @@ function DirView({ entries, dirPath, onNavigate }: {
 }
 
 /* ── Main viewer ── */
-export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigate, pdfPage, onPdfPageChange, onPdfPageCountChange, pdfSidebarOpen }: FileViewerProps) {
+export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigate, pdfPage, onPdfPageChange, onPdfPageCountChange, pdfSidebarOpen, pdfZoom }: FileViewerProps) {
   const [content, setContent] = useState<string | null>(null);
   const [binaryData, setBinaryData] = useState<ArrayBuffer | null>(null);
   const [dirEntries, setDirEntries] = useState<{ name: string; path: string; is_dir: boolean }[] | null>(null);
@@ -785,7 +807,7 @@ export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigat
         {loading ? (
           <p className="p-4 text-sm text-th-text-muted">Loading...</p>
         ) : isPdf ? (
-          <PdfView url={fileUrl} page={pdfPage} onPageChange={onPdfPageChange} onPageCountChange={onPdfPageCountChange} sidebarOpen={pdfSidebarOpen} />
+          <PdfView url={fileUrl} page={pdfPage} onPageChange={onPdfPageChange} onPageCountChange={onPdfPageCountChange} sidebarOpen={pdfSidebarOpen} zoomMode={pdfZoom} />
         ) : isEml ? (
           <EmlViewer sessionId={sessionId} filePath={filePath} onClose={hideHeader ? undefined : onClose} />
         ) : (

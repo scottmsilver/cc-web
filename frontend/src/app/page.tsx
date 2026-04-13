@@ -8,7 +8,7 @@ import { ArtifactsPane } from "@/components/artifacts-pane";
 import { ImageGalleryViewer } from "@/components/image-gallery-viewer";
 import { ResizablePanel } from "@/components/resizable-panel";
 import { themes, getTheme, applyTheme, loadSavedThemeId } from "@/lib/themes";
-import { FileViewer, PdfPageNav, PdfSidebarToggle } from "@/components/file-viewer";
+import { FileViewer, PdfPageNav, PdfSidebarToggle, PdfZoomControls, type PdfZoomMode } from "@/components/file-viewer";
 import { FileActionButtons } from "@/components/file-actions";
 import { JsonlChat } from "@/components/jsonl-chat";
 import { PendingQuestionCard } from "@/components/pending-question-card";
@@ -75,6 +75,7 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile }: {
   const [pdfPage, setPdfPage] = useState(1);
   const [pdfPageCount, setPdfPageCount] = useState(0);
   const [pdfSidebar, setPdfSidebar] = useState(false);
+  const [pdfZoom, setPdfZoom] = useState<PdfZoomMode>("fit-width");
   const [search, setSearch] = useState("");
   const dragging = useRef(false);
 
@@ -178,6 +179,7 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile }: {
             <div className="flex items-center gap-1 px-2 py-1.5 border-b border-th-border bg-th-surface flex-shrink-0">
               <span className="flex-1 text-xs font-mono text-th-text-muted truncate" title={viewingFile}>{getFileName(viewingFile)}</span>
               {viewingFile.endsWith(".pdf") && pdfPageCount > 1 && <PdfSidebarToggle open={pdfSidebar} onToggle={() => setPdfSidebar(v => !v)} />}
+              {viewingFile.endsWith(".pdf") && <PdfZoomControls zoom={pdfZoom} onZoomChange={setPdfZoom} />}
               {viewingFile.endsWith(".pdf") && <PdfPageNav page={pdfPage} pageCount={pdfPageCount} onPageChange={setPdfPage} />}
               <FileActionButtons sessionId={activeSession} filePath={viewingFile} pdfPage={pdfPage} />
             </div>
@@ -191,6 +193,7 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile }: {
             onPdfPageChange={setPdfPage}
             onPdfPageCountChange={setPdfPageCount}
             pdfSidebarOpen={pdfSidebar}
+            pdfZoom={pdfZoom}
             hideHeader
           />
         </div>
