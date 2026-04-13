@@ -510,6 +510,23 @@ def create_run(session_id: str, req: SendRequest):
     return RunResponse(**_serialize_run(run))
 
 
+@app.post("/api/sessions/{session_id}/queue")
+def queue_message(session_id: str, req: SendRequest):
+    """Queue a message to Claude while a run is already active.
+
+    Sends text directly to the tmux pane without acquiring the lock or
+    creating a new run.  Claude Code CLI natively accepts typed input
+    while working and processes it once the current turn finishes.
+    The existing progress polling will pick up the response.
+    """
+    session = _get_session_or_404(session_id)
+    try:
+        result = session.queue_message(req.message)
+        return result
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 @app.get("/api/sessions/{session_id}/runs/{run_id}", response_model=RunResponse)
 def get_run(session_id: str, run_id: str):
     _get_session_or_404(session_id)
@@ -547,6 +564,12 @@ def get_progress(session_id: str):
         "run": run_payload,
         "pending_question": pending_question,
     }
+
+
+@app.get("/api/sessions/{session_id}/subagents")
+def get_subagents(session_id: str):
+    session = _get_session_or_404(session_id)
+    return {"subagents": session.subagents()}
 
 
 @app.post("/api/sessions/{session_id}/send", response_model=SendResponse)
@@ -802,6 +825,21 @@ def parse_eml(session_id: str, path: str):
     }
 
 
+@app.get("/api/sessions/{session_id}/file-mtime/{path:path}")
+def file_mtime(session_id: str, path: str):
+    """Return the modification time of a file (lightweight staleness check)."""
+    session = _get_session_or_404(session_id)
+    clean_path = path.strip("/")
+    target = os.path.join(session.working_dir, clean_path) if clean_path else session.working_dir
+    resolved = os.path.realpath(target)
+    workdir_real = os.path.realpath(session.working_dir)
+    if resolved != workdir_real and not resolved.startswith(workdir_real + os.sep):
+        raise HTTPException(status_code=400, detail="Path traversal blocked")
+    if not os.path.exists(resolved):
+        raise HTTPException(status_code=404, detail="File not found")
+    return {"mtime": os.path.getmtime(resolved), "size": os.path.getsize(resolved)}
+
+
 @app.get("/api/sessions/{session_id}/files/{path:path}")
 def download_file(session_id: str, path: str):
     session = _get_session_or_404(session_id)
@@ -812,7 +850,8 @@ def download_file(session_id: str, path: str):
     # If path is a directory, list its contents
     target = os.path.join(session.working_dir, clean_path) if clean_path else session.working_dir
     resolved = os.path.realpath(target)
-    if not resolved.startswith(os.path.realpath(session.working_dir)):
+    workdir_real = os.path.realpath(session.working_dir)
+    if resolved != workdir_real and not resolved.startswith(workdir_real + os.sep):
         raise HTTPException(status_code=400, detail="Path traversal blocked")
     if os.path.isdir(resolved):
         entries = []

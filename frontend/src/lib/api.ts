@@ -117,6 +117,48 @@ export async function submitMultiSelect(sessionId: string): Promise<void> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
+// ── Queue (send while busy) ──
+
+export async function queueMessage(
+  sessionId: string,
+  message: string,
+): Promise<{ status: string; was_busy: boolean }> {
+  const res = await fetch(
+    `${CCHOST_API}/api/sessions/${sessionId}/queue`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    },
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+// ── Sub-agents ──
+
+export type SubAgent = {
+  agent_id: string;
+  description: string;
+  status: "running" | "completed";
+  last_activity: string;
+};
+
+export async function fetchSubAgents(
+  sessionId: string,
+): Promise<SubAgent[]> {
+  try {
+    const res = await fetch(
+      `${CCHOST_API}/api/sessions/${sessionId}/subagents`,
+    );
+    if (!res.ok) return [];
+    const data = (await res.json()) as { subagents?: SubAgent[] };
+    return data.subagents || [];
+  } catch {
+    return [];
+  }
+}
+
 // ── Messages ──
 
 export async function sendMessage(

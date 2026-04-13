@@ -11,7 +11,78 @@ import type { ContentBlock, JsonlEntry } from "@/lib/types";
 
 /* ── File reference chip for user messages ── */
 const IMAGE_EXT = /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i;
-const AT_REF_RE = /@\.\/([^\s]+)/g;
+/**
+ * Find @ file references by matching against known session files.
+ * Handles @./path, @path, and @filename patterns.
+ * Only creates chips for paths that resolve to real session files (or their directories).
+ */
+export function findAtRefs(text: string, files: string[]): { start: number; end: number; path: string }[] {
+  const results: { start: number; end: number; path: string }[] = [];
+  // Find all @ characters that could start a file reference
+  // Must be preceded by start-of-string, whitespace, or quote
+  const atPositions: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "@") continue;
+    if (i === 0 || /[\s"'(]/.test(text[i - 1])) {
+      atPositions.push(i);
+    }
+  }
+
+  for (const idx of atPositions) {
+    let afterAt = text.slice(idx + 1);
+    let prefixLen = 1; // just "@"
+
+    // Strip optional "./" prefix
+    if (afterAt.startsWith("./")) {
+      afterAt = afterAt.slice(2);
+      prefixLen = 3; // "@./"
+    }
+
+    // Try to match a known file — longest match wins
+    let bestFile = "";
+    let matchedTextLen = 0; // length of what was actually matched in the text
+    for (const f of files) {
+      if (afterAt.startsWith(f) && f.length > matchedTextLen) {
+        bestFile = f;
+        matchedTextLen = f.length;
+      }
+      // Also match by filename only (e.g. @report.pdf matching "inbox/report.pdf")
+      const basename = f.split("/").pop() || "";
+      if (basename && afterAt.startsWith(basename) && basename.length > matchedTextLen) {
+        // Only match basename if it's unambiguous (one file with that name)
+        const dupes = files.filter((ff) => ff.endsWith("/" + basename) || ff === basename);
+        if (dupes.length === 1) {
+          bestFile = f;             // resolve to full path
+          matchedTextLen = basename.length; // but only consumed basename chars from text
+        }
+      }
+    }
+
+    // Also check directory prefixes
+    if (!bestFile) {
+      const dirs = new Set<string>();
+      for (const f of files) {
+        const parts = f.split("/");
+        for (let d = 1; d < parts.length; d++) {
+          dirs.add(parts.slice(0, d).join("/") + "/");
+        }
+      }
+      for (const dir of dirs) {
+        if (afterAt.startsWith(dir) && dir.length > matchedTextLen) {
+          bestFile = dir;
+          matchedTextLen = dir.length;
+        }
+      }
+    }
+
+    if (bestFile && matchedTextLen > 0) {
+      results.push({ start: idx, end: idx + prefixLen + matchedTextLen, path: bestFile });
+    }
+  }
+  return results;
+}
+// Cheap check: does this text contain any @ that could be a file reference?
+const AT_REF_RE = /@/;
 
 function FileRefChip({ path, sessionId, files, onViewFile }: {
   path: string;
@@ -60,24 +131,24 @@ function FileRefChip({ path, sessionId, files, onViewFile }: {
 
 /** Replace @./path references in user message text with rich file chips. */
 function renderUserText(text: string, sessionId: string, files: string[], onViewFile?: (path: string) => void): React.ReactNode[] {
+  const refs = findAtRefs(text, files);
+  if (refs.length === 0) return [text];
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
-  AT_REF_RE.lastIndex = 0;
-  let match;
-  while ((match = AT_REF_RE.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index));
+  for (const ref of refs) {
+    if (ref.start > lastIndex) {
+      parts.push(text.slice(lastIndex, ref.start));
     }
     parts.push(
       <FileRefChip
-        key={`ref-${match.index}`}
-        path={match[1]}
+        key={`ref-${ref.start}`}
+        path={ref.path}
         sessionId={sessionId}
         files={files}
         onViewFile={onViewFile}
       />
     );
-    lastIndex = match.index + match[0].length;
+    lastIndex = ref.end;
   }
   if (lastIndex < text.length) {
     parts.push(text.slice(lastIndex));
@@ -420,7 +491,7 @@ function UserEntry({ entry, sessionId, files, onViewFile, onViewImages }: { entr
 }
 
 /* ── Main ── */
-export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingMessage, isWorking, refreshKey = 0 }: { sessionId: string | null; files: string[]; onViewFile?: (path: string) => void; onViewImages?: (images: string[], startIndex: number) => void; pendingMessage?: string | null; isWorking?: boolean; refreshKey?: number }) {
+export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingMessage, queuedMessages, isWorking, refreshKey = 0 }: { sessionId: string | null; files: string[]; onViewFile?: (path: string) => void; onViewImages?: (images: string[], startIndex: number) => void; pendingMessage?: string | null; queuedMessages?: string[]; isWorking?: boolean; refreshKey?: number }) {
   const [entries, setEntries] = useState<JsonlEntry[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLElement | null>(null);
@@ -499,6 +570,18 @@ export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingM
           </div>
         </div>
       )}
+
+      {/* Queued messages sent while Claude was busy */}
+      {queuedMessages && queuedMessages.length > 0 && queuedMessages.map((msg, i) => (
+        <div key={`queued-${i}`} className="flex justify-end py-1">
+          <div className="max-w-[75%] rounded-2xl px-4 py-2.5 text-sm bg-th-user-bubble border border-th-user-bubble-border relative">
+            <span className="absolute -top-2 -right-1 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-th-accent text-white leading-none">queued</span>
+            {AT_REF_RE.test(msg) && sessionId
+              ? renderUserText(msg, sessionId, files, onViewFile)
+              : msg}
+          </div>
+        </div>
+      ))}
 
       {/* Working indicator */}
       {isWorking && (

@@ -28,13 +28,16 @@ import {
   fetchProgress as apiFetchProgress,
   fetchRun as apiFetchRun,
   startRun as apiStartRun,
+  queueMessage as apiQueueMessage,
   answerQuestion as apiAnswerQuestion,
   fetchFiles as apiFetchFiles,
   fetchConversation as apiFetchConversation,
   uploadFiles as apiUploadFiles,
   runSlashCommand as apiRunSlashCommand,
   getFileUrl,
+  fetchSubAgents as apiFetchSubAgents,
 } from "@/lib/api";
+import type { SubAgent } from "@/lib/api";
 import type { ProgressResponse, RunResponse } from "@/lib/progress";
 
 const DEFAULT_RUN_TIMEOUT_SECONDS = 900;
@@ -136,6 +139,7 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile, downloadF
             filePath={viewingFile}
             onClose={() => setViewingFile(null)}
             onNavigate={(path) => setViewingFile(path)}
+            hideHeader
           />
         </div>
       ) : (
@@ -232,6 +236,7 @@ export default function Chat() {
   const [viewingFile, setViewingFile] = useState<string | null>(null);
   const [viewingImages, setViewingImages] = useState<{ images: string[]; index: number } | null>(null);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
+  const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
   const [draftInput, setDraftInput] = useState("");
   const [themeId, setThemeId] = useState("light");
   const [showSettings, setShowSettings] = useState(false);
@@ -243,6 +248,7 @@ export default function Chat() {
   const [gmailSuggestions, setGmailSuggestions] = useState<SuggestedSearch[]>([]);
   const [gmailSuggestionsLoading, setGmailSuggestionsLoading] = useState(false);
   const [progress, setProgress] = useState<ProgressResponse | null>(null);
+  const [subagents, setSubagents] = useState<SubAgent[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [commandResult, setCommandResult] = useState<string | null>(null);
   const [jsonlRefreshKey, setJsonlRefreshKey] = useState(0);
@@ -337,12 +343,16 @@ export default function Chat() {
     const params = new URLSearchParams(window.location.search);
     const sessionParam = params.get("session");
     const tabParam = params.get("tab");
+    const fileParam = params.get("file");
     if (sessionParam) {
       setActiveSession(sessionParam);
       activeSessionRef.current = sessionParam;
     }
-    if (tabParam === "files" || tabParam === "debug" || tabParam === "terminal") {
+    if (tabParam === "files" || tabParam === "debug" || tabParam === "terminal" || tabParam === "artifacts") {
       setActiveTab(tabParam);
+    }
+    if (fileParam) {
+      setViewingFile(fileParam);
     }
     if (params.get("gmail_connected") === "true") {
       setShowGmailPicker(true);
@@ -353,16 +363,17 @@ export default function Chat() {
     urlInitializedRef.current = true;
   }, []);
 
-  // Sync session/tab to URL
+  // Sync session/tab/file to URL
   useEffect(() => {
     if (!urlInitializedRef.current) return;
     const params = new URLSearchParams();
     if (activeSession) params.set("session", activeSession);
     if (activeTab !== "chat") params.set("tab", activeTab);
+    if (viewingFile) params.set("file", viewingFile);
     const qs = params.toString();
     const url = qs ? `?${qs}` : window.location.pathname;
     window.history.replaceState(null, "", url);
-  }, [activeSession, activeTab]);
+  }, [activeSession, activeTab, viewingFile]);
 
   useEffect(() => {
     void fetchSessions();
@@ -379,10 +390,12 @@ export default function Chat() {
       setProgress(null);
       setActiveRunId(null);
       setIsAnswering(false);
+      setQueuedMessages([]);
       return;
     }
 
     setIsAnswering(false);
+    setQueuedMessages([]);
     setGmailSuggestions([]);
     setGmailDownloads([]);
     setShowGmailPicker(false);
@@ -410,10 +423,14 @@ export default function Chat() {
 
     const loadProgress = async () => {
       try {
-        const nextProgress = await apiFetchProgress(activeSession);
+        const [nextProgress, agents] = await Promise.all([
+          apiFetchProgress(activeSession),
+          apiFetchSubAgents(activeSession),
+        ]);
         if (cancelled) return;
 
         setProgress(nextProgress);
+        setSubagents(agents);
         pollFailureCountRef.current = 0;
 
         if (nextProgress.run && ["pending", "running", "waiting_for_input"].includes(nextProgress.run.status)) {
@@ -482,6 +499,7 @@ export default function Chat() {
           setIsLoading(false);
           setIsAnswering(false);
           setActiveRunId(null);
+          setQueuedMessages([]);
           void fetchSessions();
           void fetchFiles(activeSession);
           return;
@@ -492,6 +510,7 @@ export default function Chat() {
           setIsLoading(false);
           setIsAnswering(false);
           setActiveRunId(null);
+          setQueuedMessages([]);
         }
       } catch (error) {
         if (cancelled) return;
@@ -709,6 +728,7 @@ export default function Chat() {
     setFiles([]);
     setProgress(null);
     setActiveRunId(null);
+    setQueuedMessages([]);
     setActiveTab("chat");
     setIsLoading(false);
     setIsAnswering(false);
@@ -877,6 +897,7 @@ export default function Chat() {
                   onViewFile={(path) => { setViewingImages(null); setViewingFile((prev) => prev === path ? null : path); }}
                   onViewImages={(images, index) => { setViewingFile(null); setViewingImages({ images, index }); }}
                   pendingMessage={pendingMessage}
+                  queuedMessages={queuedMessages}
                   isWorking={isLoading}
                   refreshKey={jsonlRefreshKey}
                 />
@@ -944,20 +965,14 @@ export default function Chat() {
                 }}
                 onSend={(msg) => {
                   setSendError(null);
-                  // Always try to send directly. If a run is active, interrupt first.
                   if (isLoading && activeSession) {
-                    void import("@/lib/api").then(({ interruptSession }) =>
-                      interruptSession(activeSession).then(() => {
-                        setIsLoading(false);
-                        setActiveRunId(null);
-                        setTimeout(() => sendMessage(msg), 1500);
-                      }).catch(() => {
-                        // Interrupt failed (maybe no active run) — just send directly
-                        setIsLoading(false);
-                        setActiveRunId(null);
-                        sendMessage(msg);
-                      })
-                    );
+                    // Queue the message — Claude Code CLI accepts input while working
+                    setQueuedMessages((prev) => [...prev, msg]);
+                    void apiQueueMessage(activeSession, msg).catch((err) => {
+                      console.warn("Failed to queue message:", err);
+                      setSendError("Failed to queue message");
+                      setQueuedMessages((prev) => prev.filter((m) => m !== msg));
+                    });
                   } else {
                     sendMessage(msg);
                   }
@@ -1040,7 +1055,7 @@ export default function Chat() {
           <div className="flex flex-1 flex-col overflow-hidden">
             {progress ? (
               <div className="flex-1 overflow-y-auto p-4">
-                <ProgressPanel progress={progress} sessionId={activeSession} />
+                <ProgressPanel progress={progress} sessionId={activeSession} subagents={subagents} />
               </div>
             ) : (
               <div className="flex h-full items-center justify-center">

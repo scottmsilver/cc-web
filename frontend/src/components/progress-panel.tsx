@@ -15,11 +15,14 @@ import { ProgressEventFeed } from "@/components/progress-event-feed";
 import { ProgressTimeline } from "@/components/progress-timeline";
 import { QuestionCard } from "@/components/question-card";
 
+import type { SubAgent } from "@/lib/api";
+
 type ProgressPanelProps = {
   progress: ProgressResponse;
   sessionId?: string | null;
   onAnswer?: (optionIndex: number) => void;
   className?: string;
+  subagents?: SubAgent[];
 };
 
 function RawJsonBlock({ progress }: { progress: ProgressResponse }) {
@@ -103,7 +106,40 @@ function StatusBlock({
   );
 }
 
-export function ProgressPanel({ progress, sessionId, onAnswer, className }: ProgressPanelProps) {
+function SubAgentCards({ subagents }: { subagents: SubAgent[] }) {
+  if (subagents.length === 0) return null;
+  const running = subagents.filter(a => a.status === "running");
+  const completed = subagents.filter(a => a.status === "completed");
+  return (
+    <div className="rounded-xl border border-th-border bg-th-bg p-4">
+      <h3 className="text-sm font-medium text-th-text mb-3">
+        Sub-agents {running.length > 0 && <span className="text-th-accent ml-1">({running.length} active)</span>}
+      </h3>
+      <div className="space-y-2">
+        {running.map(a => (
+          <div key={a.agent_id} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-th-surface border border-th-accent/20">
+            <span className="mt-0.5 w-2 h-2 rounded-full bg-th-accent animate-pulse flex-shrink-0" />
+            <div className="min-w-0 flex-1">
+              <div className="text-xs text-th-text truncate">{a.description}</div>
+              <div className="text-[11px] text-th-text-faint mt-0.5">Running</div>
+            </div>
+          </div>
+        ))}
+        {completed.map(a => (
+          <div key={a.agent_id} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-th-surface opacity-60">
+            <span className="mt-0.5 w-2 h-2 rounded-full bg-th-text-faint flex-shrink-0" />
+            <div className="min-w-0 flex-1">
+              <div className="text-xs text-th-text-muted truncate">{a.description}</div>
+              <div className="text-[11px] text-th-text-faint mt-0.5">Completed</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function ProgressPanel({ progress, sessionId, onAnswer, className, subagents }: ProgressPanelProps) {
   const normalizedSnapshot = normalizeProgressSnapshot(progress.snapshot);
 
   return (
@@ -111,6 +147,7 @@ export function ProgressPanel({ progress, sessionId, onAnswer, className }: Prog
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.03fr)_minmax(0,0.97fr)] 2xl:grid-cols-2">
         <div className="space-y-6">
           <StatusBlock snapshot={normalizedSnapshot} run={progress.run} onAnswer={onAnswer} />
+          {subagents && subagents.length > 0 && <SubAgentCards subagents={subagents} />}
           <ProgressTimeline milestones={normalizedSnapshot.milestones} />
         </div>
 

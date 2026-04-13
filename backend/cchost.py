@@ -498,6 +498,201 @@ class CCSession:
             is_prompt=self._is_tmux_idle(),
         )
 
+    def queue_message(self, message: str) -> dict:
+        """Send a message to tmux WITHOUT acquiring _tmux_lock.
+
+        This lets users type follow-up messages while Claude is already working.
+        Claude Code CLI natively queues typed input, so the message will be
+        processed once the current turn finishes.
+
+        Returns {"status": "queued"|"sent", "was_busy": bool}.
+        """
+        if self._tmux_session is None:
+            raise RuntimeError(f"Session {self.id} is destroyed")
+
+        was_busy = not self._is_tmux_idle()
+
+        pane = self._tmux_session.active_window.active_pane
+
+        if len(message) < 500:
+            pane.send_keys(message, enter=True)
+        else:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+                f.write(message)
+                tmp_path = f.name
+            try:
+                server = self._tmux_session.server
+                import uuid as _uuid
+
+                buf_name = f"cchost-q-{self.id}-{_uuid.uuid4().hex[:8]}"
+                server.cmd("load-buffer", "-b", buf_name, tmp_path)
+                pane.cmd("paste-buffer", "-b", buf_name, "-d")
+                time.sleep(0.3)
+                pane.send_keys("", enter=True)
+            finally:
+                os.unlink(tmp_path)
+
+        return {
+            "status": "queued" if was_busy else "sent",
+            "was_busy": was_busy,
+        }
+
+    def subagents(self) -> list[dict]:
+        """Return a list of sub-agent summaries for this session.
+
+        Scans the subagents directory for JSONL files and extracts a lightweight
+        summary from each (reading only the first few and last few lines).
+        Returns an empty list if no subagents directory exists or the session
+        has no Claude session ID.
+        """
+        if not self._claude_session_id:
+            return []
+
+        subagents_dir = os.path.expanduser(
+            f"~/.claude/projects/-{self._project_slug}/{self._claude_session_id}/subagents"
+        )
+        if not os.path.isdir(subagents_dir):
+            return []
+
+        results = []
+        try:
+            jsonl_files = [f for f in os.listdir(subagents_dir) if f.endswith(".jsonl")]
+        except OSError:
+            return []
+
+        for filename in jsonl_files:
+            filepath = os.path.join(subagents_dir, filename)
+            try:
+                agent_info = self._parse_subagent_file(filepath)
+                if agent_info:
+                    results.append(agent_info)
+            except Exception:
+                logger.debug("Failed to parse subagent file %s", filepath, exc_info=True)
+
+        # Sort by last_activity, most recent first
+        results.sort(key=lambda x: x.get("last_activity", ""), reverse=True)
+        return results
+
+    @staticmethod
+    def _parse_subagent_file(filepath: str) -> Optional[dict]:
+        """Parse a subagent JSONL file, reading only the first 10 and last 20 lines."""
+        try:
+            # Read head (first 10 lines)
+            head_lines: list[str] = []
+            with open(filepath, "r") as f:
+                for _ in range(10):
+                    line = f.readline()
+                    if not line:
+                        break
+                    head_lines.append(line)
+
+            # Read tail (last ~32KB) for status detection
+            tail_lines: list[str] = []
+            file_size = os.path.getsize(filepath)
+            with open(filepath, "rb") as f:
+                seek_pos = max(0, file_size - 32768)
+                f.seek(seek_pos)
+                raw = f.read().decode("utf-8", errors="replace")
+                tail_lines = raw.splitlines()[-20:]
+        except OSError:
+            return None
+
+        if not head_lines and not tail_lines:
+            return None
+
+        lines = head_lines  # For head parsing below
+
+        # Parse the first few lines to get the agent_id and task description
+        agent_id = None
+        description = ""
+        head_lines = lines[:10]
+        for line in head_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+
+            # Extract agent_id from any entry that has it
+            if not agent_id and entry.get("agentId"):
+                agent_id = entry["agentId"]
+
+            # The first user message is the task description
+            if not description and entry.get("type") == "user":
+                message = entry.get("message", {})
+                if isinstance(message, dict):
+                    content = message.get("content", "")
+                    if isinstance(content, str):
+                        description = content[:200]
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                description = (block.get("text") or "")[:200]
+                                break
+                elif isinstance(message, str):
+                    description = message[:200]
+
+        # Parse the last few lines for status and last_activity
+        last_entry = None
+        last_timestamp = ""
+        for line in reversed(tail_lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if last_entry is None:
+                last_entry = entry
+            # Extract agent_id if we still don't have it
+            if not agent_id and entry.get("agentId"):
+                agent_id = entry["agentId"]
+            # Extract timestamp
+            if not last_timestamp:
+                ts = entry.get("timestamp") or entry.get("_timestamp") or entry.get("ts") or ""
+                if ts:
+                    last_timestamp = str(ts)
+            if last_entry is not None and agent_id:
+                break
+
+        if not agent_id:
+            # Derive from filename as fallback (agent-{id}.jsonl)
+            basename = os.path.basename(filepath)
+            agent_id = basename.replace(".jsonl", "")
+
+        # Determine status: "completed" if last entry is last-prompt, or an assistant
+        # message with stop_reason "end_turn" (sub-agents don't write last-prompt)
+        status = "running"
+        if last_entry:
+            if last_entry.get("type") == "last-prompt":
+                status = "completed"
+            elif last_entry.get("type") == "assistant":
+                msg = last_entry.get("message", {})
+                if isinstance(msg, dict) and msg.get("stop_reason") == "end_turn":
+                    status = "completed"
+
+        # Use file mtime as fallback for last_activity
+        if not last_timestamp:
+            try:
+                mtime = os.path.getmtime(filepath)
+                last_timestamp = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+            except OSError:
+                last_timestamp = ""
+
+        return {
+            "agent_id": agent_id,
+            "description": description,
+            "status": status,
+            "last_activity": last_timestamp,
+        }
+
     def _send_message_to_tmux(self, message: str) -> None:
         """Send a message to Claude Code via tmux, handling long messages safely."""
         if not self._tmux_lock.acquire(timeout=5):
