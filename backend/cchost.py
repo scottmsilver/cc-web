@@ -1003,6 +1003,10 @@ class CCSession:
                 time.sleep(1.0)
                 content = pane.cmd("capture-pane", "-p").stdout
                 full_text = "\n".join(content) if isinstance(content, list) else str(content)
+                # The footer "to dismiss" appears immediately with the spinner.
+                # Wait for the answer to actually render (spinner text goes away).
+                if "Answering" in full_text and _has_overlay_footer(full_text):
+                    continue
                 if _has_overlay_footer(full_text):
                     # Capture full pane including scrollback
                     # -S - starts from beginning, -E - ends at bottom
