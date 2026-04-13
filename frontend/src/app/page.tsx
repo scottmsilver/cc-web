@@ -105,28 +105,16 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile, downloadF
           <p className="text-xs text-th-text-muted">No files yet. Upload or ask Claude to create some.</p>
         ) : (
           files.map((file) => (
-            <div
+            <button
               key={file}
               title={file}
-              className={`flex cursor-pointer items-center gap-1 truncate rounded px-2 py-1.5 text-xs font-mono ${
+              onClick={() => setViewingFile(viewingFile === file ? null : file)}
+              className={`w-full truncate rounded px-2 py-1.5 text-xs font-mono text-left ${
                 viewingFile === file ? "bg-th-surface-hover text-th-accent" : "text-th-text-muted hover:bg-th-surface"
               }`}
             >
-              <button
-                onClick={() => setViewingFile(viewingFile === file ? null : file)}
-                className="flex-1 truncate text-left"
-                title={file}
-              >
-                {file}
-              </button>
-              <button
-                onClick={() => downloadFile(file)}
-                title="Download"
-                className="flex-shrink-0 text-th-text-muted hover:text-th-accent"
-              >
-                ↓
-              </button>
-            </div>
+              {file}
+            </button>
           ))
         )}
       </div>
