@@ -135,6 +135,7 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile, downloadF
             sessionId={activeSession}
             filePath={viewingFile}
             onClose={() => setViewingFile(null)}
+            onNavigate={(path) => setViewingFile(path)}
           />
         </div>
       ) : (

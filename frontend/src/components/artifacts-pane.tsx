@@ -63,7 +63,7 @@ export function ArtifactsPane({
         <button onClick={onClose} className="text-th-text-faint hover:text-th-text text-sm cursor-pointer" title="Close">✕</button>
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
-        <FileViewer sessionId={sessionId} filePath={selectedFile} onClose={onClose} hideHeader />
+        <FileViewer sessionId={sessionId} filePath={selectedFile} onClose={onClose} hideHeader onNavigate={onSelectFile} />
       </div>
     </div>
   );

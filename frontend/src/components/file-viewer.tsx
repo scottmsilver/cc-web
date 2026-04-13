@@ -6,12 +6,14 @@ import remarkGfm from "remark-gfm";
 import * as XLSX from "xlsx";
 
 import { getFileUrl } from "@/lib/api";
+import { EmlViewer } from "@/components/eml-viewer";
 
 type FileViewerProps = {
   sessionId: string;
   filePath: string;
   onClose: () => void;
   hideHeader?: boolean;
+  onNavigate?: (path: string) => void;
 };
 
 type PdfDocument = {
@@ -325,328 +327,136 @@ function ZipView({ data }: { data: ArrayBuffer }) {
   );
 }
 
-/* ── EML (RFC 2822 email) ── */
-type EmlPart = {
-  headers: Record<string, string>;
-  contentType: string;
-  filename?: string;
-  body: string;       // decoded text for text/* parts
-  rawBody: string;    // raw body (base64 or quoted-printable encoded)
-  parts: EmlPart[];   // child parts for multipart/*
-};
+/* ── Directory listing with breadcrumb navigation ── */
+function DirView({ entries, dirPath, onNavigate }: {
+  entries: { name: string; path: string; is_dir: boolean }[];
+  dirPath: string;
+  onNavigate: (path: string) => void;
+}) {
+  const fileIcon = (ext: string) => {
+    if (/^(pdf)$/i.test(ext)) return "\u{1F4C4}";
+    if (/^(xlsx?|csv)$/i.test(ext)) return "\u{1F4CA}";
+    if (/^(png|jpg|jpeg|gif|webp)$/i.test(ext)) return "\u{1F5BC}";
+    if (/^(eml)$/i.test(ext)) return "\u{2709}";
+    if (/^(json|txt|md)$/i.test(ext)) return "\u{1F4DD}";
+    if (/^(zip)$/i.test(ext)) return "\u{1F4E6}";
+    return "\u{1F4CE}";
+  };
 
-function parseEml(raw: string): EmlPart {
-  return parseOnePart(raw);
-}
-
-function parseOnePart(raw: string): EmlPart {
-  // Split headers from body at first blank line
-  const headerEnd = raw.indexOf("\r\n\r\n");
-  const altEnd = raw.indexOf("\n\n");
-  let splitIdx: number;
-  let sep: string;
-  if (headerEnd >= 0 && (altEnd < 0 || headerEnd <= altEnd)) {
-    splitIdx = headerEnd; sep = "\r\n\r\n";
-  } else if (altEnd >= 0) {
-    splitIdx = altEnd; sep = "\n\n";
-  } else {
-    splitIdx = raw.length; sep = "";
-  }
-
-  const headerBlock = raw.slice(0, splitIdx);
-  const bodyRaw = sep ? raw.slice(splitIdx + sep.length) : "";
-
-  // Parse headers (unfold continuation lines)
-  const headers: Record<string, string> = {};
-  const unfolded = headerBlock.replace(/\r?\n[ \t]+/g, " ");
-  for (const line of unfolded.split(/\r?\n/)) {
-    const colon = line.indexOf(":");
-    if (colon > 0) {
-      const key = line.slice(0, colon).trim().toLowerCase();
-      const val = line.slice(colon + 1).trim();
-      headers[key] = val;
-    }
-  }
-
-  const ct = headers["content-type"] || "text/plain";
-  const cte = (headers["content-transfer-encoding"] || "").toLowerCase();
-
-  // Multipart: split on boundary
-  const boundaryMatch = ct.match(/boundary="?([^";\s]+)"?/i);
-  if (boundaryMatch) {
-    const boundary = boundaryMatch[1];
-    const parts: EmlPart[] = [];
-    const segments = bodyRaw.split("--" + boundary);
-    for (let i = 1; i < segments.length; i++) {
-      const seg = segments[i];
-      if (seg.startsWith("--")) break; // closing boundary
-      parts.push(parseOnePart(seg.replace(/^\r?\n/, "")));
-    }
-    return { headers, contentType: ct, body: "", rawBody: bodyRaw, parts };
-  }
-
-  // Leaf part: decode body
-  // For text/* parts, decode using the charset from Content-Type (default UTF-8).
-  const isTextType = ct.split(";")[0].trim().toLowerCase().startsWith("text/");
-  const charsetMatch = ct.match(/charset="?([^";\s]+)"?/i);
-  const charset = charsetMatch ? charsetMatch[1].toLowerCase() : "utf-8";
-  let decoded = bodyRaw;
-  if (cte === "base64") {
-    try {
-      const binaryStr = atob(bodyRaw.replace(/\s/g, ""));
-      if (isTextType) {
-        // Decode binary string as UTF-8
-        const bytes = Uint8Array.from(binaryStr, c => c.charCodeAt(0));
-        decoded = new TextDecoder(charset, { fatal: false }).decode(bytes);
-      } else {
-        decoded = binaryStr;
-      }
-    } catch { decoded = bodyRaw; }
-  } else if (cte === "quoted-printable") {
-    // Decode QP to bytes, then interpret using charset
-    const qpDecoded = bodyRaw
-      .replace(/=\r?\n/g, "")
-      .replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
-    if (isTextType) {
-      const bytes = Uint8Array.from(qpDecoded, c => c.charCodeAt(0));
-      decoded = new TextDecoder(charset, { fatal: false }).decode(bytes);
-    } else {
-      decoded = qpDecoded;
-    }
-  }
-
-  // Extract filename from Content-Disposition or Content-Type
-  let filename: string | undefined;
-  const cd = headers["content-disposition"] || "";
-  const fnMatch = cd.match(/filename="?([^";\n]+)"?/i) || ct.match(/name="?([^";\n]+)"?/i);
-  if (fnMatch) filename = fnMatch[1].trim();
-
-  return { headers, contentType: ct.split(";")[0].trim().toLowerCase(), body: decoded, rawBody: bodyRaw, parts: [], filename };
-}
-
-function EmlView({ content }: { content: string }) {
-  const eml = parseEml(content);
-  const [activeTab, setActiveTab] = useState<"headers" | "text" | "html" | "parts">("text");
-
-  // Collect all parts flat
-  const allParts: EmlPart[] = [];
-  function collectParts(part: EmlPart) {
-    if (part.parts.length > 0) part.parts.forEach(collectParts);
-    else allParts.push(part);
-  }
-  collectParts(eml);
-
-  const textPart = allParts.find(p => p.contentType === "text/plain");
-  const htmlPart = allParts.find(p => p.contentType === "text/html");
-  const attachments = allParts.filter(p => !p.contentType.startsWith("text/") || p.filename);
-  const inlineImages = allParts.filter(p => p.contentType.startsWith("image/"));
-
-  const from = eml.headers["from"] || "";
-  const to = eml.headers["to"] || "";
-  const subject = eml.headers["subject"] || "(no subject)";
-  const date = eml.headers["date"] || "";
-
-  const tabs: { key: typeof activeTab; label: string; show: boolean }[] = [
-    { key: "text", label: "Text", show: !!textPart },
-    { key: "html", label: "HTML", show: !!htmlPart },
-    { key: "parts", label: `Parts (${allParts.length})`, show: allParts.length > 1 },
-    { key: "headers", label: "Headers", show: true },
+  // Build breadcrumb segments from the path
+  const segments = dirPath.replace(/\/$/, "").split("/").filter(Boolean);
+  const crumbs: { label: string; path: string }[] = [
+    { label: "\u{1F3E0}", path: "/" },
   ];
+  for (let i = 0; i < segments.length; i++) {
+    crumbs.push({
+      label: segments[i],
+      path: segments.slice(0, i + 1).join("/") + "/",
+    });
+  }
 
-  // Auto-select first available tab
-  useEffect(() => {
-    if (activeTab === "text" && !textPart && htmlPart) setActiveTab("html");
-  }, [activeTab, textPart, htmlPart]);
+  // Sort: directories first, then files
+  const sorted = [...entries].sort((a, b) => {
+    if (a.is_dir && !b.is_dir) return -1;
+    if (!a.is_dir && b.is_dir) return 1;
+    return a.name.localeCompare(b.name);
+  });
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Email header summary */}
-      <div className="px-4 py-3 border-b border-th-border space-y-1">
-        <div className="text-sm font-medium text-th-text">{subject}</div>
-        <div className="text-xs text-th-text-muted">
-          <span className="font-medium">From:</span> {from}
-        </div>
-        <div className="text-xs text-th-text-muted">
-          <span className="font-medium">To:</span> {to}
-        </div>
-        {date && <div className="text-xs text-th-text-faint">{date}</div>}
-        {attachments.length > 0 && (
-          <div className="text-xs text-th-text-muted">
-            {attachments.length} attachment{attachments.length !== 1 ? "s" : ""}: {attachments.map(a => a.filename || a.contentType).join(", ")}
-          </div>
-        )}
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-0 border-b border-th-border flex-shrink-0">
-        {tabs.filter(t => t.show).map(t => (
-          <button
-            key={t.key}
-            onClick={() => setActiveTab(t.key)}
-            className={`px-4 py-2 text-xs font-medium border-b-2 transition-colors ${
-              activeTab === t.key
-                ? "border-th-accent text-th-accent"
-                : "border-transparent text-th-text-muted hover:text-th-text"
-            }`}
-          >
-            {t.label}
-          </button>
+    <div className="p-4">
+      {/* Breadcrumb */}
+      <div className="flex items-center gap-1 text-xs mb-3 flex-wrap">
+        {crumbs.map((crumb, i) => (
+          <span key={crumb.path} className="flex items-center gap-1">
+            {i > 0 && <span className="text-th-text-faint">/</span>}
+            <button
+              onClick={() => onNavigate(crumb.path)}
+              className="text-th-accent hover:text-th-accent-hover hover:underline underline-offset-2"
+            >
+              {crumb.label}
+            </button>
+          </span>
         ))}
       </div>
 
-      {/* Tab content */}
-      <div className="flex-1 overflow-auto">
-        {activeTab === "text" && textPart && (
-          <div className="whitespace-pre-wrap p-4 text-sm text-th-text leading-relaxed" style={{ fontFamily: "Roboto, 'Google Sans', Arial, sans-serif" }}>{textPart.body}</div>
-        )}
-
-        {activeTab === "html" && htmlPart && (
-          <div className="p-4">
-            <iframe
-              srcDoc={`<style>body { font-family: Roboto, 'Google Sans', Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #202124; margin: 8px; }</style>${htmlPart.body}`}
-              className="w-full min-h-[400px] border border-th-border rounded bg-white"
-              sandbox="allow-same-origin"
-              title="Email HTML"
-            />
-          </div>
-        )}
-
-        {activeTab === "parts" && (
-          <div className="p-4 space-y-2">
-            {allParts.map((part, i) => (
-              <PartRow key={i} part={part} index={i} />
-            ))}
-          </div>
-        )}
-
-        {activeTab === "headers" && (
-          <div className="p-4">
-            <table className="text-xs w-full border-collapse">
-              <tbody>
-                {Object.entries(eml.headers).map(([key, val]) => (
-                  <tr key={key} className="border-b border-th-border">
-                    <td className="py-1.5 pr-3 font-medium text-th-text-muted whitespace-nowrap align-top">{key}</td>
-                    <td className="py-1.5 text-th-text break-all">{val}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* Inline images at bottom of text/html views */}
-        {(activeTab === "text" || activeTab === "html") && inlineImages.length > 0 && (
-          <div className="px-4 pb-4">
-            <div className="text-xs font-medium text-th-text-muted mb-2">Inline Images</div>
-            <div className="flex flex-wrap gap-2">
-              {inlineImages.map((img, i) => {
-                const dataUrl = `data:${img.contentType};base64,${btoa(img.body)}`;
-                return (
-                  <img key={i} src={dataUrl} alt={img.filename || `image ${i}`}
-                    className="max-h-32 rounded border border-th-border"
-                    title={img.filename || img.contentType}
-                  />
-                );
-              })}
-            </div>
-          </div>
+      <div className="space-y-0.5">
+        {sorted.map((entry) => {
+          const ext = entry.name.split(".").pop()?.toLowerCase() || "";
+          return (
+            <button
+              key={entry.path}
+              onClick={() => onNavigate(entry.is_dir ? entry.path + "/" : entry.path)}
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-th-surface transition-colors text-left"
+              title={entry.path}
+            >
+              <span className="text-base flex-shrink-0">
+                {entry.is_dir ? "\u{1F4C1}" : fileIcon(ext)}
+              </span>
+              <span className="text-sm text-th-text font-mono truncate flex-1">{entry.name}</span>
+              {entry.is_dir && <span className="text-xs text-th-text-faint">{"\u203A"}</span>}
+            </button>
+          );
+        })}
+        {sorted.length === 0 && (
+          <p className="text-xs text-th-text-muted py-4 text-center">Empty folder</p>
         )}
       </div>
-    </div>
-  );
-}
-
-function PartRow({ part, index }: { part: EmlPart; index: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const isImage = part.contentType.startsWith("image/");
-  const isText = part.contentType.startsWith("text/");
-  const size = part.rawBody.length;
-  const fmt = (n: number) => n > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)}MB` : n > 1024 ? `${(n / 1024).toFixed(0)}KB` : `${n}B`;
-
-  return (
-    <div className="border border-th-border rounded-lg overflow-hidden">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-th-surface transition-colors"
-      >
-        <span className="text-xs text-th-text-faint">{index + 1}</span>
-        <span className="text-xs font-mono text-th-text flex-1">{part.filename || part.contentType}</span>
-        <span className="text-xs text-th-text-muted">{fmt(size)}</span>
-        <span className="text-xs text-th-text-faint">{expanded ? "\u25B2" : "\u25BC"}</span>
-      </button>
-      {expanded && (
-        <div className="border-t border-th-border">
-          {/* Part headers */}
-          <div className="px-3 py-1.5 bg-th-surface">
-            {Object.entries(part.headers).map(([k, v]) => (
-              <div key={k} className="text-[11px] text-th-text-muted"><span className="font-medium">{k}:</span> {v}</div>
-            ))}
-          </div>
-          {/* Part body preview */}
-          <div className="max-h-64 overflow-auto">
-            {isImage ? (
-              <div className="p-3">
-                <img src={`data:${part.contentType};base64,${btoa(part.body)}`} alt={part.filename || ""} className="max-w-full rounded" />
-              </div>
-            ) : isText ? (
-              <pre className="p-3 text-xs font-mono text-th-text whitespace-pre-wrap">{part.body.slice(0, 5000)}</pre>
-            ) : (
-              <div className="p-3 text-xs text-th-text-muted">Binary content ({part.contentType}, {fmt(size)})</div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
 /* ── Main viewer ── */
-export function FileViewer({ sessionId, filePath, onClose, hideHeader }: FileViewerProps) {
+export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigate }: FileViewerProps) {
   const [content, setContent] = useState<string | null>(null);
   const [binaryData, setBinaryData] = useState<ArrayBuffer | null>(null);
+  const [dirEntries, setDirEntries] = useState<{ name: string; path: string; is_dir: boolean }[] | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fileName = filePath.split("/").pop() || filePath;
+  const isDir = filePath.endsWith("/");
+  const fileName = filePath.split("/").filter(Boolean).pop() || filePath;
   const ext = filePath.split(".").pop()?.toLowerCase() || "";
-  const isMd = ext === "md";
-  const isSpreadsheet = ext === "xlsx" || ext === "xls";
-  const isPdf = ext === "pdf";
-  const isZip = ext === "zip";
-  const isEml = ext === "eml";
-  const isThreadJson = fileName === "thread.json";
-  const isImage = /^(png|jpg|jpeg|gif|webp)$/.test(ext);
+  const isMd = !isDir && ext === "md";
+  const isSpreadsheet = !isDir && (ext === "xlsx" || ext === "xls");
+  const isPdf = !isDir && ext === "pdf";
+  const isZip = !isDir && ext === "zip";
+  const isEml = !isDir && ext === "eml";
+  const isThreadJson = !isDir && fileName === "thread.json";
+  const isImage = !isDir && /^(png|jpg|jpeg|gif|webp)$/.test(ext);
   const needsBinary = isSpreadsheet || isZip;
-  const needsText = !needsBinary && !isPdf && !isImage;
+  const needsText = !isDir && !needsBinary && !isPdf && !isImage && !isEml;
   const fileUrl = getFileUrl(sessionId, filePath);
 
   useEffect(() => {
     setLoading(true);
     setContent(null);
     setBinaryData(null);
+    setDirEntries(null);
 
-    if (needsBinary) {
+    if (isDir) {
+      fetch(fileUrl).then(r => r.json()).then(d => { setDirEntries(d.entries || []); setLoading(false); }).catch(() => { setDirEntries([]); setLoading(false); });
+    } else if (needsBinary) {
       fetch(fileUrl).then(r => r.arrayBuffer()).then(buf => { setBinaryData(buf); setLoading(false); }).catch((error) => { console.warn("Failed to load binary file:", error); setLoading(false); });
     } else if (needsText) {
-      // EML files can be large (base64 attachments) — allow up to 10MB, others 100KB
-      const maxSize = isEml ? 10 * 1024 * 1024 : 100000;
-      fetch(fileUrl).then(r => r.text()).then(t => { setContent(t.substring(0, maxSize)); setLoading(false); }).catch((error) => { console.warn("Failed to load text file:", error); setLoading(false); });
+      fetch(fileUrl).then(r => r.text()).then(t => { setContent(t.substring(0, 100000)); setLoading(false); }).catch((error) => { console.warn("Failed to load text file:", error); setLoading(false); });
     } else {
       setLoading(false);
     }
-  }, [sessionId, filePath, needsBinary, needsText, fileUrl]);
+  }, [sessionId, filePath, isDir, needsBinary, needsText, fileUrl]);
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      {!hideHeader && (
+      {!hideHeader && !isEml && (
         <div className="flex items-center gap-3 px-4 py-2 border-b border-th-border">
-          <button onClick={onClose} className="text-th-text-muted hover:text-th-text text-sm cursor-pointer">\u2190 Back</button>
-          <h3 className="text-sm font-medium text-th-text truncate flex-1">{fileName}</h3>
-          <DownloadLink sessionId={sessionId} filePath={filePath} />
+          <button onClick={onClose} className="text-th-text-muted hover:text-th-text text-sm cursor-pointer">{"\u2190"} Back</button>
+          <h3 className="text-sm font-medium text-th-text truncate flex-1">{isDir ? filePath : fileName}</h3>
+          {!isDir && <DownloadLink sessionId={sessionId} filePath={filePath} />}
         </div>
       )}
       <div className="flex-1 overflow-auto">
         {loading ? (
           <p className="p-4 text-sm text-th-text-muted">Loading...</p>
+        ) : isDir && dirEntries !== null ? (
+          <DirView entries={dirEntries} dirPath={filePath} onNavigate={onNavigate || onClose} />
         ) : isPdf ? (
           <PdfView url={fileUrl} />
         ) : isZip && binaryData ? (
@@ -655,8 +465,8 @@ export function FileViewer({ sessionId, filePath, onClose, hideHeader }: FileVie
           <SpreadsheetView data={binaryData} />
         ) : isImage ? (
           <div className="p-4"><img src={fileUrl} alt={fileName} className="max-w-full rounded border border-th-border" /></div>
-        ) : isEml && content !== null ? (
-          <EmlView content={content} />
+        ) : isEml ? (
+          <EmlViewer sessionId={sessionId} filePath={filePath} onClose={hideHeader ? undefined : onClose} />
         ) : isThreadJson && content !== null ? (
           <ThreadJsonView content={content} sessionId={sessionId} />
         ) : isMd && content !== null ? (

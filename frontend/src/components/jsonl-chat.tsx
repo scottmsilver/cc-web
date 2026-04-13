@@ -19,15 +19,20 @@ function FileRefChip({ path, sessionId, files, onViewFile }: {
   files: string[];
   onViewFile?: (path: string) => void;
 }) {
-  const resolved = files.find((f) => f === path) || files.find((f) => f.endsWith(`/${path}`)) || path;
-  const isImage = IMAGE_EXT.test(path);
-  const isPdf = path.endsWith(".pdf");
-  const isInFiles = files.some((f) => f === resolved || f.endsWith(`/${path}`));
-  const fileUrl = makeFileUrl(sessionId, resolved);
+  const isDir = path.endsWith("/");
+  const resolved = isDir
+    ? path
+    : (files.find((f) => f === path) || files.find((f) => f.endsWith(`/${path}`)) || path);
+  const isImage = !isDir && IMAGE_EXT.test(path);
+  const isPdf = !isDir && path.endsWith(".pdf");
+  const isInFiles = isDir
+    ? files.some((f) => f.startsWith(path) || f.startsWith(path.replace(/\/$/, "")))
+    : files.some((f) => f === resolved || f.endsWith(`/${path}`));
+  const fileUrl = isDir ? "" : makeFileUrl(sessionId, resolved);
 
   const handleClick = () => {
-    if (isInFiles && onViewFile) onViewFile(resolved);
-    else window.open(fileUrl, "_blank");
+    if (onViewFile) onViewFile(resolved);
+    else if (!isDir) window.open(fileUrl, "_blank");
   };
 
   return (
@@ -45,7 +50,7 @@ function FileRefChip({ path, sessionId, files, onViewFile }: {
         />
       ) : (
         <span className="flex-shrink-0 opacity-60">
-          {isPdf ? "\u{1F4C4}" : "\u{1F4CE}"}
+          {isDir ? "\u{1F4C1}" : isPdf ? "\u{1F4C4}" : "\u{1F4CE}"}
         </span>
       )}
       <span className="max-w-[180px] truncate group-hover:text-th-accent">{path.split("/").pop()}</span>

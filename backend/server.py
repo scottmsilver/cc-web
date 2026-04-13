@@ -707,20 +707,120 @@ def list_files(session_id: str):
     return {"files": session.files()}
 
 
+@app.get("/api/sessions/{session_id}/eml/{path:path}")
+def parse_eml(session_id: str, path: str):
+    """Parse an EML file server-side and return structured parts as JSON."""
+    import email
+    import email.policy
+
+    session = _get_session_or_404(session_id)
+    try:
+        data = session.read_file(path)
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    msg = email.message_from_bytes(data, policy=email.policy.default)
+
+    def _extract_parts(part, index=0):
+        """Recursively extract MIME parts."""
+        ct = part.get_content_type()
+        result = {
+            "index": index,
+            "content_type": ct,
+            "filename": part.get_filename(),
+            "charset": part.get_content_charset(),
+            "is_multipart": part.is_multipart(),
+            "children": [],
+        }
+        if part.is_multipart():
+            for i, child in enumerate(part.iter_parts()):
+                result["children"].append(_extract_parts(child, i))
+        else:
+            payload = part.get_payload(decode=True)
+            if payload is None:
+                result["size"] = 0
+            else:
+                result["size"] = len(payload)
+                if ct.startswith("text/"):
+                    charset = part.get_content_charset() or "utf-8"
+                    try:
+                        result["body"] = payload.decode(charset, errors="replace")
+                    except (LookupError, UnicodeDecodeError):
+                        result["body"] = payload.decode("utf-8", errors="replace")
+                elif ct.startswith("image/"):
+                    import base64 as b64mod
+
+                    result["data_url"] = f"data:{ct};base64,{b64mod.b64encode(payload).decode('ascii')}"
+                    # Also check Content-ID for cid: references
+                    cid = part.get("Content-ID", "")
+                    if cid:
+                        result["cid"] = cid.strip("<>")
+        return result
+
+    # Extract headers
+    headers = {}
+    for key in ("From", "To", "Cc", "Subject", "Date", "Message-ID"):
+        val = msg.get(key)
+        if val:
+            headers[key.lower()] = str(val)
+
+    parts = _extract_parts(msg)
+
+    # Collect flattened leaf parts for convenience
+    leaves = []
+
+    def _flatten(p):
+        if p["children"]:
+            for c in p["children"]:
+                _flatten(c)
+        else:
+            leaves.append(p)
+
+    _flatten(parts)
+
+    # Find text and HTML bodies
+    text_body = None
+    html_body = None
+    for leaf in leaves:
+        if leaf["content_type"] == "text/plain" and not leaf.get("filename") and text_body is None:
+            text_body = leaf.get("body", "")
+        if leaf["content_type"] == "text/html" and not leaf.get("filename") and html_body is None:
+            html_body = leaf.get("body", "")
+
+    # Resolve cid: references in HTML
+    if html_body:
+        for leaf in leaves:
+            if leaf.get("cid") and leaf.get("data_url"):
+                html_body = html_body.replace(f"cid:{leaf['cid']}", leaf["data_url"])
+
+    return {
+        "headers": headers,
+        "text_body": text_body,
+        "html_body": html_body,
+        "parts": parts,
+        "leaves": leaves,
+    }
+
+
 @app.get("/api/sessions/{session_id}/files/{path:path}")
 def download_file(session_id: str, path: str):
     session = _get_session_or_404(session_id)
 
+    # Normalize: treat "/" or empty as root of working dir
+    clean_path = path.strip("/")
+
     # If path is a directory, list its contents
-    target = os.path.join(session.working_dir, path)
+    target = os.path.join(session.working_dir, clean_path) if clean_path else session.working_dir
     resolved = os.path.realpath(target)
     if not resolved.startswith(os.path.realpath(session.working_dir)):
         raise HTTPException(status_code=400, detail="Path traversal blocked")
     if os.path.isdir(resolved):
         entries = []
         for name in sorted(os.listdir(resolved)):
+            if name.startswith("."):
+                continue  # hide dotfiles
             full = os.path.join(resolved, name)
-            rel = os.path.join(path.rstrip("/"), name)
+            rel = os.path.join(clean_path, name) if clean_path else name
             entries.append({"name": name, "path": rel, "is_dir": os.path.isdir(full)})
         return {"directory": path, "entries": entries}
 
