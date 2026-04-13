@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import * as XLSX from "xlsx";
 
 import { getFileUrl } from "@/lib/api";
+import { getFileName } from "@/lib/config";
 import { EmlViewer } from "@/components/eml-viewer";
 
 type FileViewerProps = {
@@ -31,7 +32,7 @@ type PdfDocument = {
 function DownloadLink({ sessionId, filePath, label }: { sessionId: string; filePath: string; label?: string }) {
   const url = getFileUrl(sessionId, filePath);
   return (
-    <a href={url} download={filePath.split("/").pop()} className="text-th-accent hover:text-th-accent-hover text-xs underline underline-offset-2 cursor-pointer">
+    <a href={url} download={getFileName(filePath)} className="text-th-accent hover:text-th-accent-hover text-xs underline underline-offset-2 cursor-pointer">
       {label || "Download"}
     </a>
   );

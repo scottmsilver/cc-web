@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { getFileUrl } from "@/lib/api";
+import { getFileName } from "@/lib/config";
 
 const CHECK_ICON = (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -151,7 +152,7 @@ export function FileActionButtons({
       </button>
       <a
         href={fileUrl}
-        download={filePath.split("/").pop()}
+        download={getFileName(filePath)}
         className={ICON_BTN}
         title="Download"
       >

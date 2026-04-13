@@ -4,17 +4,7 @@ import { useState } from "react";
 import { FileViewer, PdfPageNav, PdfSidebarToggle } from "@/components/file-viewer";
 import { FileActionButtons } from "@/components/file-actions";
 import { getFileUrl } from "@/lib/api";
-
-function groupByDirectory(files: string[]): Map<string, string[]> {
-  const groups = new Map<string, string[]>();
-  for (const f of files) {
-    const idx = f.lastIndexOf("/");
-    const dir = idx >= 0 ? f.substring(0, idx) : "";
-    if (!groups.has(dir)) groups.set(dir, []);
-    groups.get(dir)!.push(f);
-  }
-  return groups;
-}
+import { getFileName, groupByDirectory } from "@/lib/config";
 
 export function ArtifactsPane({
   sessionId,
@@ -55,7 +45,7 @@ export function ArtifactsPane({
             return (
               <optgroup key={dir} label={dir + "/"}>
                 {dirFiles.map((f) => (
-                  <option key={f} value={f}>{f.split("/").pop()}</option>
+                  <option key={f} value={f}>{getFileName(f)}</option>
                 ))}
               </optgroup>
             );

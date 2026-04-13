@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 
 import { fetchJsonl } from "@/lib/api";
 import { FileLink, makeFileUrl } from "@/components/file-link";
-import { CCHOST_API } from "@/lib/config";
+import { CCHOST_API, getFileName } from "@/lib/config";
 import type { ContentBlock, JsonlEntry } from "@/lib/types";
 
 /* ── File reference chip for user messages ── */
@@ -47,7 +47,7 @@ export function findAtRefs(text: string, files: string[]): { start: number; end:
         matchedTextLen = f.length;
       }
       // Also match by filename only (e.g. @report.pdf matching "inbox/report.pdf")
-      const basename = f.split("/").pop() || "";
+      const basename = getFileName(f);
       if (basename && afterAt.startsWith(basename) && basename.length > matchedTextLen) {
         // Only match basename if it's unambiguous (one file with that name)
         const dupes = files.filter((ff) => ff.endsWith("/" + basename) || ff === basename);
@@ -124,7 +124,7 @@ function FileRefChip({ path, sessionId, files, onViewFile }: {
           {isDir ? "\u{1F4C1}" : isPdf ? "\u{1F4C4}" : "\u{1F4CE}"}
         </span>
       )}
-      <span className="max-w-[180px] truncate group-hover:text-th-accent">{path.split("/").pop()}</span>
+      <span className="max-w-[180px] truncate group-hover:text-th-accent">{getFileName(path)}</span>
     </button>
   );
 }
@@ -168,7 +168,7 @@ function ToolCall({ block, files, sessionId, onViewFile }: { block: ContentBlock
 
   // Read/Write with file — just show as file link
   if (filePath && !cmd) {
-    const fname = filePath.split("/").pop() || filePath;
+    const fname = getFileName(filePath);
     return (
       <div className="text-xs text-th-text-faint py-px">
         {block.name} <FileLink filePath={fname} sessionId={sessionId} variant="inline" files={files} onViewFile={onViewFile} />

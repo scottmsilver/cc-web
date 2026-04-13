@@ -1,6 +1,6 @@
 "use client";
 
-export type TabId = "chat" | "files" | "artifacts" | "debug" | "terminal";
+export type TabId = "chat" | "files" | "debug" | "terminal";
 
 type TabConfig = {
   id: TabId;
@@ -45,7 +45,6 @@ export function TabBar({
   const tabs: TabConfig[] = [
     { id: "chat", label: "Chat" },
     { id: "files", label: "Files", badge: fileCount > 0 ? ` (${fileCount})` : undefined },
-    { id: "artifacts", label: "Artifacts" },
     { id: "debug", label: "Debug", badge: hasProgress ? " \u25CF" : undefined },
     { id: "terminal", label: "Terminal" },
   ];

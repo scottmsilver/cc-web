@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { CCHOST_API } from "@/lib/config";
+import { CCHOST_API, getFileName } from "@/lib/config";
 
 /**
  * Renders file paths as clickable links to the cchost file API.
@@ -62,7 +62,7 @@ export function FileLink({
         )}
         <a
           href={url}
-          download={filePath.split("/").pop()}
+          download={getFileName(filePath)}
           className="text-th-text-faint hover:text-th-accent text-[10px] cursor-pointer ml-0.5"
           title="Download"
         >
@@ -81,7 +81,7 @@ export function FileLink({
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      download={isBin ? filePath.split("/").pop() : undefined}
+      download={isBin ? getFileName(filePath) : undefined}
       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-rose-400 hover:text-rose-300 text-xs font-mono no-underline transition-colors border border-zinc-700 hover:border-rose-500/50"
       title={`Download ${filePath}`}
     >

@@ -19,8 +19,7 @@ import type { GmailDownload } from "@/components/chat-input";
 import { DraftExportButtons } from "@/components/draft-export-buttons";
 import { SessionSelector } from "@/components/session-selector";
 import { TabBar, type TabId } from "@/components/tab-bar";
-import { isBinaryFile } from "@/lib/config";
-import { CCHOST_API } from "@/lib/config";
+import { isBinaryFile, getFileName, groupByDirectory, CCHOST_API } from "@/lib/config";
 import {
   fetchGmailStatus,
   fetchSessions as apiFetchSessions,
@@ -64,18 +63,19 @@ type ConversationEntry = {
   text?: unknown;
 };
 
-/* ── Files tab with resizable split ── */
-function FilesTab({ activeSession, files, viewingFile, setViewingFile, downloadFile }: {
+/* ── Files tab with resizable split + directory grouping ── */
+
+function FilesTab({ activeSession, files, viewingFile, setViewingFile }: {
   activeSession: string | null;
   files: string[];
   viewingFile: string | null;
   setViewingFile: (f: string | null) => void;
-  downloadFile: (path: string) => void;
 }) {
   const [listWidth, setListWidth] = useState(280);
   const [pdfPage, setPdfPage] = useState(1);
   const [pdfPageCount, setPdfPageCount] = useState(0);
   const [pdfSidebar, setPdfSidebar] = useState(false);
+  const [search, setSearch] = useState("");
   const dragging = useRef(false);
 
   const onMouseDown = useCallback(() => {
@@ -97,38 +97,86 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile, downloadF
     document.addEventListener("mouseup", onMouseUp);
   }, []);
 
+  const filtered = search
+    ? files.filter((f) => f.toLowerCase().includes(search.toLowerCase()))
+    : files;
+  const groups = groupByDirectory(filtered);
+  const dirs = [...groups.keys()].sort((a, b) => {
+    if (a === "") return -1;
+    if (b === "") return 1;
+    return a.localeCompare(b);
+  });
+
   return (
     <div className="flex flex-1 min-h-0">
-      <div className="overflow-y-auto p-3 flex-shrink-0" style={{ width: listWidth }}>
-        <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-th-text-muted">Files</h3>
-        {!activeSession ? (
-          <p className="text-xs text-th-text-muted">Send a message to create a session</p>
-        ) : files.length === 0 ? (
-          <p className="text-xs text-th-text-muted">No files yet. Upload or ask Claude to create some.</p>
-        ) : (
-          files.map((file) => (
-            <button
-              key={file}
-              title={file}
-              onClick={() => setViewingFile(viewingFile === file ? null : file)}
-              className={`w-full truncate rounded px-2 py-1.5 text-xs font-mono text-left ${
-                viewingFile === file ? "bg-th-surface-hover text-th-accent" : "text-th-text-muted hover:bg-th-surface"
-              }`}
-            >
-              {file}
-            </button>
-          ))
-        )}
+      <div className="overflow-y-auto flex-shrink-0 flex flex-col" style={{ width: listWidth }}>
+        <div className="p-2 flex-shrink-0">
+          <div className="relative">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Filter files..."
+              className="w-full rounded border border-th-border bg-th-bg px-2 py-1.5 text-xs text-th-text placeholder:text-th-text-faint focus:border-th-accent focus:outline-none"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch("")}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-th-text-faint hover:text-th-text text-xs cursor-pointer"
+              >✕</button>
+            )}
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto px-2 pb-2">
+          {!activeSession ? (
+            <p className="text-xs text-th-text-muted px-1">Send a message to create a session</p>
+          ) : files.length === 0 ? (
+            <p className="text-xs text-th-text-muted px-1">No files yet. Upload or ask Claude to create some.</p>
+          ) : filtered.length === 0 ? (
+            <p className="text-xs text-th-text-muted px-1">No matches</p>
+          ) : (
+            dirs.map((dir) => {
+              const dirFiles = groups.get(dir)!;
+              return (
+                <div key={dir} className="mb-2">
+                  <div className="px-1 py-1 text-[10px] font-medium uppercase tracking-wider text-th-text-faint truncate" title={dir || "(root)"}>
+                    {dir || "(root)"}
+                  </div>
+                  {dirFiles.map((file) => {
+                    const name = getFileName(file);
+                    const active = viewingFile === file;
+                    return (
+                      <button
+                        key={file}
+                        title={file}
+                        onClick={() => setViewingFile(active ? null : file)}
+                        className={`w-full truncate rounded px-2 py-1.5 text-xs font-mono text-left ${
+                          active
+                            ? "bg-th-surface-hover text-th-accent border-l-2 border-th-accent"
+                            : "text-th-text-muted hover:bg-th-surface"
+                        }`}
+                      >
+                        {name}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
       <div
         className="w-1 cursor-col-resize bg-th-border hover:bg-th-accent active:bg-th-accent transition-colors flex-shrink-0"
+        role="separator"
+        aria-orientation="vertical"
         onMouseDown={onMouseDown}
       />
       {viewingFile && activeSession ? (
         <div className="flex-1 min-w-0 flex flex-col">
           {!viewingFile.endsWith("/") && (
             <div className="flex items-center gap-1 px-2 py-1.5 border-b border-th-border bg-th-surface flex-shrink-0">
-              <span className="flex-1 text-xs font-mono text-th-text-muted truncate" title={viewingFile}>{viewingFile.split("/").pop()}</span>
+              <span className="flex-1 text-xs font-mono text-th-text-muted truncate" title={viewingFile}>{getFileName(viewingFile)}</span>
               {viewingFile.endsWith(".pdf") && pdfPageCount > 1 && <PdfSidebarToggle open={pdfSidebar} onToggle={() => setPdfSidebar(v => !v)} />}
               {viewingFile.endsWith(".pdf") && <PdfPageNav page={pdfPage} pageCount={pdfPageCount} onPageChange={setPdfPage} />}
               <FileActionButtons sessionId={activeSession} filePath={viewingFile} pdfPage={pdfPage} />
@@ -148,7 +196,7 @@ function FilesTab({ activeSession, files, viewingFile, setViewingFile, downloadF
         </div>
       ) : (
         <div className="flex-1 flex items-center justify-center">
-          <p className="text-sm text-th-text-muted">Click a file to view.</p>
+          <p className="text-sm text-th-text-muted">Select a file to preview</p>
         </div>
       )}
     </div>
@@ -351,7 +399,7 @@ export default function Chat() {
       setActiveSession(sessionParam);
       activeSessionRef.current = sessionParam;
     }
-    if (tabParam === "files" || tabParam === "debug" || tabParam === "terminal" || tabParam === "artifacts") {
+    if (tabParam === "files" || tabParam === "debug" || tabParam === "terminal") {
       setActiveTab(tabParam);
     }
     if (fileParam) {
@@ -1032,26 +1080,7 @@ export default function Chat() {
             files={files}
             viewingFile={viewingFile}
             setViewingFile={setViewingFile}
-            downloadFile={downloadFile}
           />
-        )}
-
-        {activeTab === "artifacts" && activeSession && files.length > 0 && (
-          <div className="flex flex-1 min-h-0">
-            <ArtifactsPane
-              sessionId={activeSession}
-              files={files}
-              selectedFile={viewingFile || files[0]}
-              onSelectFile={setViewingFile}
-              onClose={() => setActiveTab("chat")}
-            />
-          </div>
-        )}
-
-        {activeTab === "artifacts" && (!activeSession || files.length === 0) && (
-          <div className="flex flex-1 items-center justify-center">
-            <p className="text-sm text-th-text-muted">No artifacts yet. Start a session and Claude will create files.</p>
-          </div>
         )}
 
         {activeTab === "debug" && (
