@@ -55,6 +55,7 @@ Sessions survive server restarts. On startup, dormant sessions are loaded from t
 - `@filename` autocomplete for referencing session files
 - `/command` autocomplete for Claude Code slash commands
 - All attachments shown as removable chips before sending
+- Message queuing: type while Claude is working, messages queue and process in order
 
 ### File and folder viewer
 - PDF rendering (pdfjs, paginated)
@@ -65,6 +66,9 @@ Sessions survive server restarts. On startup, dormant sessions are loaded from t
 - ZIP contents listing
 - Markdown rendering
 - Image viewer with gallery
+- File action buttons: copy content (images as PNG, text), copy @ref, download
+- File staleness detection with refresh toast when files change on disk
+- Resizable split between file list and viewer
 - Resizable split between file list and viewer
 
 ### Gmail integration
@@ -76,10 +80,20 @@ Sessions survive server restarts. On startup, dormant sessions are loaded from t
 - Create Gmail drafts and Google Docs from session files
 
 ### Chat rendering
-- `@./file` references in messages render as clickable chips with file icons
-- Image references show thumbnails
-- Directory references show folder icon, click opens folder view
+- `@file` references in messages render as clickable chips (matched against session file list, not regex)
+- Image references show thumbnails, click opens in viewer
+- Directory references show folder icon, click opens folder browser
+- Queued messages shown with "queued" badge until processed
 - Markdown rendering for assistant messages with file linking
+
+### Sub-agent visibility
+- See what agents Claude spawns during complex tasks
+- Progress panel shows cards for each sub-agent (running with pulse, completed dimmed)
+- Polled alongside progress events
+
+### URL routing
+- Session, tab, and viewed file reflected in query params
+- Shareable/bookmarkable URLs for any view state
 
 ## Environment variables
 
@@ -104,9 +118,12 @@ Sessions survive server restarts. On startup, dormant sessions are loaded from t
 | `POST` | `/api/sessions/{id}/send` | Send a message (sync) |
 | `POST` | `/api/sessions/{id}/answer` | Answer a question from Claude |
 | `POST` | `/api/sessions/{id}/interrupt` | Send Escape to stop Claude |
+| `POST` | `/api/sessions/{id}/queue` | Queue a message (non-blocking, for typing while busy) |
 | `GET` | `/api/sessions/{id}/progress` | Get progress events |
+| `GET` | `/api/sessions/{id}/subagents` | List spawned sub-agents |
 | `GET` | `/api/sessions/{id}/files` | List files in working directory |
 | `GET` | `/api/sessions/{id}/files/{path}` | Download file or list directory |
+| `GET` | `/api/sessions/{id}/file-mtime/{path}` | File modification time (staleness check) |
 | `GET` | `/api/sessions/{id}/eml/{path}` | Parse EML file (server-side MIME) |
 | `POST` | `/api/sessions/{id}/upload` | Upload files |
 | `GET` | `/api/sessions/{id}/jsonl` | Raw JSONL conversation |
