@@ -72,7 +72,7 @@ export function ArtifactsPane({
           {"\u2715"}
         </button>
       </div>
-      <div className="flex-1 min-h-0 overflow-auto">
+      <div className="flex flex-col flex-1 min-h-0">
         <FileViewer sessionId={sessionId} filePath={selectedFile} onClose={onClose} hideHeader onNavigate={onSelectFile} pdfPage={pdfPage} onPdfPageChange={setPdfPage} onPdfPageCountChange={setPdfPageCount} pdfSidebarOpen={pdfSidebar} />
       </div>
     </div>

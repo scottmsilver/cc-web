@@ -505,10 +505,13 @@ function PdfView({ url, page, onPageChange, onPageCountChange, sidebarOpen }: { 
     const slot = container.querySelector<HTMLElement>(`[data-page="${p}"]`);
     if (!slot) return;
     programmaticScroll.current = true;
-    container.scrollTo({ top: slot.offsetTop - container.offsetTop, behavior: "smooth" });
+    // Use getBoundingClientRect for reliable offset regardless of positioning contexts
+    const targetTop = slot.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+    container.scrollTo({ top: targetTop, behavior: "instant" });
     setCurrentPage(p);
     onPageChange?.(p);
-    setTimeout(() => { programmaticScroll.current = false; }, 500);
+    // Reset after a frame since we use instant scroll
+    requestAnimationFrame(() => { programmaticScroll.current = false; });
   };
 
   if (error) return <p className="p-4 text-sm text-red-600">{error}</p>;
