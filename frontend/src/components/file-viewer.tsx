@@ -14,6 +14,7 @@ type FileViewerProps = {
   onClose: () => void;
   hideHeader?: boolean;
   onNavigate?: (path: string) => void;
+  onPdfPageChange?: (page: number) => void;
 };
 
 type PdfDocument = {
@@ -194,7 +195,7 @@ function SpreadsheetView({ data }: { data: ArrayBuffer }) {
 }
 
 /* ── PDF ── */
-function PdfView({ url }: { url: string }) {
+function PdfView({ url, onPageChange }: { url: string; onPageChange?: (page: number) => void }) {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const [pageCount, setPageCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
@@ -250,9 +251,9 @@ function PdfView({ url }: { url: string }) {
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-4 py-1.5 border-b border-th-border flex-shrink-0">
-        <button disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)} className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface">{"\u2190"}</button>
+        <button disabled={currentPage <= 1} onClick={() => { setCurrentPage(p => p - 1); onPageChange?.(currentPage - 1); }} className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface">{"\u2190"}</button>
         <span className="text-xs text-th-text-muted">{currentPage} / {pageCount}</span>
-        <button disabled={currentPage >= pageCount} onClick={() => setCurrentPage(p => p + 1)} className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface">{"\u2192"}</button>
+        <button disabled={currentPage >= pageCount} onClick={() => { setCurrentPage(p => p + 1); onPageChange?.(currentPage + 1); }} className="px-2 py-0.5 rounded border border-th-border text-xs disabled:opacity-30 cursor-pointer hover:bg-th-surface">{"\u2192"}</button>
       </div>
       <div ref={canvasContainerRef} className="flex-1 overflow-auto p-2" />
     </div>
@@ -406,13 +407,14 @@ function DirView({ entries, dirPath, onNavigate }: {
 }
 
 /* ── Main viewer ── */
-export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigate }: FileViewerProps) {
+export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigate, onPdfPageChange }: FileViewerProps) {
   const [content, setContent] = useState<string | null>(null);
   const [binaryData, setBinaryData] = useState<ArrayBuffer | null>(null);
   const [dirEntries, setDirEntries] = useState<{ name: string; path: string; is_dir: boolean }[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [stale, setStale] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [pdfPage, setPdfPage] = useState(1);
 
   const isDir = filePath.endsWith("/");
   const fileName = filePath.split("/").filter(Boolean).pop() || filePath;
@@ -494,7 +496,7 @@ export function FileViewer({ sessionId, filePath, onClose, hideHeader, onNavigat
         ) : isDir && dirEntries !== null ? (
           <DirView entries={dirEntries} dirPath={filePath} onNavigate={onNavigate || onClose} />
         ) : isPdf ? (
-          <PdfView url={fileUrl} />
+          <PdfView url={fileUrl} onPageChange={(p) => { setPdfPage(p); onPdfPageChange?.(p); }} />
         ) : isZip && binaryData ? (
           <ZipView data={binaryData} />
         ) : isSpreadsheet && binaryData ? (

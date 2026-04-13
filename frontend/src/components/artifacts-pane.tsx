@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { FileViewer } from "@/components/file-viewer";
 import { FileActionButtons } from "@/components/file-actions";
 import { getFileUrl } from "@/lib/api";
@@ -31,6 +32,7 @@ export function ArtifactsPane({
   const groups = groupByDirectory(files);
   const dirs = [...groups.keys()].sort();
   const isDir = selectedFile.endsWith("/");
+  const [pdfPage, setPdfPage] = useState(1);
 
   return (
     <div className="flex flex-col h-full border-l border-th-border overflow-hidden">
@@ -56,7 +58,7 @@ export function ArtifactsPane({
             );
           })}
         </select>
-        {!isDir && <FileActionButtons sessionId={sessionId} filePath={selectedFile} />}
+        {!isDir && <FileActionButtons sessionId={sessionId} filePath={selectedFile} pdfPage={pdfPage} />}
         <button
           onClick={onClose}
           className="w-7 h-7 flex items-center justify-center rounded text-th-text-faint hover:text-th-text hover:bg-th-surface-hover transition-colors cursor-pointer"
@@ -66,7 +68,7 @@ export function ArtifactsPane({
         </button>
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
-        <FileViewer sessionId={sessionId} filePath={selectedFile} onClose={onClose} hideHeader onNavigate={onSelectFile} />
+        <FileViewer sessionId={sessionId} filePath={selectedFile} onClose={onClose} hideHeader onNavigate={onSelectFile} onPdfPageChange={setPdfPage} />
       </div>
     </div>
   );

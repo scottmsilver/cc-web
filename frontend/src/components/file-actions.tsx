@@ -53,11 +53,37 @@ export async function copyImageToClipboard(url: string): Promise<void> {
   }
 }
 
-/** Copy file content to clipboard. Images as PNG, text as text. */
-export async function copyFileContent(fileUrl: string, ext: string): Promise<void> {
+/** Render a PDF page to a PNG blob. */
+export async function renderPdfPageToBlob(
+  fileUrl: string,
+  pageNum: number,
+  scale = 2,
+): Promise<Blob> {
+  const pdfjsLib = await import("pdfjs-dist");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+  const pdf = await pdfjsLib.getDocument(fileUrl).promise;
+  const page = await pdf.getPage(Math.min(pageNum, pdf.numPages));
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement("canvas");
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  await page.render({ canvasContext: canvas.getContext("2d")!, viewport }).promise;
+  return new Promise<Blob>((res) => canvas.toBlob((b) => res(b!), "image/png"));
+}
+
+/** Copy file content to clipboard. Images as PNG, PDFs as page image, text as text. */
+export async function copyFileContent(
+  fileUrl: string,
+  ext: string,
+  pdfPage?: number,
+): Promise<void> {
   const isImage = /^(png|jpg|jpeg|gif|webp|svg)$/i.test(ext);
+  const isPdf = ext === "pdf";
   if (isImage) {
     await copyImageToClipboard(fileUrl);
+  } else if (isPdf) {
+    const blob = await renderPdfPageToBlob(fileUrl, pdfPage || 1);
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
   } else {
     const r = await fetch(fileUrl);
     const text = await r.text();
@@ -77,9 +103,11 @@ export function copyAtRef(filePath: string): Promise<void> {
 export function FileActionButtons({
   sessionId,
   filePath,
+  pdfPage,
 }: {
   sessionId: string;
   filePath: string;
+  pdfPage?: number;
 }) {
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const [refState, setRefState] = useState<"idle" | "copied">("idle");
@@ -88,7 +116,7 @@ export function FileActionButtons({
 
   const handleCopy = async () => {
     try {
-      await copyFileContent(fileUrl, ext);
+      await copyFileContent(fileUrl, ext, pdfPage);
     } catch {
       // Fallback to text
       const r = await fetch(fileUrl);
