@@ -138,12 +138,12 @@ export function EmlViewer({ sessionId, filePath, onClose }: { sessionId: string;
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 flex flex-col overflow-auto min-h-0">
+      <div className={`flex-1 flex flex-col min-h-0 ${activeTab === "html" ? "" : "overflow-auto"}`}>
         {activeTab === "html" && html_body && (
           <div className="flex-1 flex flex-col p-2 min-h-0">
             <iframe
               srcDoc={`${GMAIL_STYLE}${html_body}`}
-              className="flex-1 w-full border border-th-border rounded bg-white"
+              className="flex-1 w-full border border-th-border rounded bg-white min-h-0"
               sandbox="allow-same-origin"
               title="Email HTML"
             />
