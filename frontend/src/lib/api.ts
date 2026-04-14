@@ -1,6 +1,6 @@
 import { CCHOST_API } from "@/lib/config";
 import type { ProgressResponse, RunResponse } from "@/lib/progress";
-import type { JsonlEntry } from "@/lib/types";
+import type { JsonlEntry, Topic } from "@/lib/types";
 
 export type GmailThread = {
   id: string;
@@ -356,4 +356,52 @@ export async function fetchTerminalOutput(
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = (await res.json()) as { terminal?: string };
   return data.terminal || "";
+}
+
+// ── Topics ──
+
+export type { Topic, TopicConversation } from "@/lib/types";
+
+export async function fetchTopics(): Promise<Topic[]> {
+  const res = await fetch(`${CCHOST_API}/api/topics`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()) as Topic[];
+}
+
+export async function createTopic(name: string): Promise<Topic> {
+  const res = await fetch(`${CCHOST_API}/api/topics`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(`Failed to create topic: HTTP ${res.status}`);
+  return (await res.json()) as Topic;
+}
+
+export async function fetchTopic(slug: string): Promise<Topic> {
+  const res = await fetch(`${CCHOST_API}/api/topics/${encodeURIComponent(slug)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()) as Topic;
+}
+
+export async function deleteTopic(slug: string): Promise<void> {
+  const res = await fetch(`${CCHOST_API}/api/topics/${encodeURIComponent(slug)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
+export async function startTopicConversation(slug: string): Promise<{ session_id: string; conversation_id: string }> {
+  const res = await fetch(`${CCHOST_API}/api/topics/${encodeURIComponent(slug)}/conversations`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Failed to start conversation: HTTP ${res.status}`);
+  return (await res.json()) as { session_id: string; conversation_id: string };
+}
+
+export async function resumeTopicConversation(slug: string, convId: string): Promise<{ session_id: string }> {
+  const res = await fetch(
+    `${CCHOST_API}/api/topics/${encodeURIComponent(slug)}/conversations/${encodeURIComponent(convId)}/resume`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(`Failed to resume conversation: HTTP ${res.status}`);
+  return (await res.json()) as { session_id: string };
 }

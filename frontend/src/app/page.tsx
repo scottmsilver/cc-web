@@ -18,6 +18,8 @@ import { GmailPicker, type SelectedThread, type SuggestedSearch } from "@/compon
 import type { GmailDownload } from "@/components/chat-input";
 import { DraftExportButtons } from "@/components/draft-export-buttons";
 import { SessionSelector } from "@/components/session-selector";
+import { TopicSelector } from "@/components/topic-selector";
+import type { Topic } from "@/lib/types";
 import { TabBar, type TabId } from "@/components/tab-bar";
 import { isBinaryFile, getFileName, groupByDirectory, CCHOST_API } from "@/lib/config";
 import {
@@ -36,6 +38,10 @@ import {
   runSlashCommand as apiRunSlashCommand,
   getFileUrl,
   fetchSubAgents as apiFetchSubAgents,
+  fetchTopics as apiFetchTopics,
+  createTopic as apiCreateTopic,
+  deleteTopic as apiDeleteTopic,
+  startTopicConversation as apiStartTopicConversation,
 } from "@/lib/api";
 import type { SubAgent } from "@/lib/api";
 import type { ProgressResponse, RunResponse } from "@/lib/progress";
@@ -285,6 +291,8 @@ export default function Chat() {
   const [isLoading, setIsLoading] = useState(false);
   const [isAnswering, setIsAnswering] = useState(false);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
+  const [topics, setTopics] = useState<Topic[]>([]);
+  const [activeTopic, setActiveTopic] = useState<string | null>(null);
   const [files, setFiles] = useState<string[]>([]);
   const [activeSession, setActiveSession] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("chat");
@@ -429,13 +437,24 @@ export default function Chat() {
     window.history.replaceState(null, "", url);
   }, [activeSession, activeTab, viewingFile]);
 
+  const fetchTopics = useCallback(async () => {
+    try {
+      const list = await apiFetchTopics();
+      setTopics(list);
+    } catch (error) {
+      console.warn("Failed to fetch topics:", error);
+    }
+  }, []);
+
   useEffect(() => {
     void fetchSessions();
+    void fetchTopics();
     const intervalId = window.setInterval(() => {
       void fetchSessions();
+      void fetchTopics();
     }, 10000);
     return () => window.clearInterval(intervalId);
-  }, [fetchSessions]);
+  }, [fetchSessions, fetchTopics]);
 
   useEffect(() => {
     if (!activeSession) {
@@ -630,6 +649,17 @@ export default function Chat() {
       return activeSessionRef.current;
     }
 
+    // If a topic is active, start a conversation in it
+    if (activeTopic) {
+      const result = await apiStartTopicConversation(activeTopic);
+      skipConversationLoadForSessionRef.current = result.session_id;
+      activeSessionRef.current = result.session_id;
+      setActiveSession(result.session_id);
+      void fetchTopics();
+      return result.session_id;
+    }
+
+    // Legacy: create a standalone session
     const sessionId = generateSessionId();
     const response = await apiCreateSession(sessionId, getSessionWorkingDir(sessionId));
 
@@ -780,6 +810,7 @@ export default function Chat() {
     activeSessionRef.current = null;
     pollFailureCountRef.current = 0;
     setActiveSession(null);
+    setActiveTopic(null);
     setMessages([]);
     setFiles([]);
     setProgress(null);
@@ -788,6 +819,77 @@ export default function Chat() {
     setActiveTab("chat");
     setIsLoading(false);
     setIsAnswering(false);
+  };
+
+  // ── Topic actions ──
+
+  const handleNewTopic = async () => {
+    const name = window.prompt("Topic name:");
+    if (!name?.trim()) return;
+    try {
+      const topic = await apiCreateTopic(name.trim());
+      await fetchTopics();
+      // Start a conversation in the new topic
+      const result = await apiStartTopicConversation(topic.slug);
+      setActiveTopic(topic.slug);
+      setActiveSession(result.session_id);
+      activeSessionRef.current = result.session_id;
+      skipConversationLoadForSessionRef.current = result.session_id;
+      setMessages([]);
+      setFiles([]);
+      setProgress(null);
+      setActiveRunId(null);
+      setActiveTab("chat");
+    } catch (error) {
+      console.warn("Failed to create topic:", error);
+    }
+  };
+
+  const handleSelectTopic = async (slug: string, sessionId: string) => {
+    setActiveTopic(slug);
+    setMessages([]);
+    setFiles([]);
+    setProgress(null);
+    setActiveRunId(null);
+    setIsLoading(false);
+    setIsAnswering(false);
+    setGmailDownloads([]);
+    setGmailThreadIds([]);
+    setActiveTab("chat");
+    if (sessionId) {
+      setActiveSession(sessionId);
+      activeSessionRef.current = sessionId;
+    } else {
+      // No conversations yet, start one
+      try {
+        const result = await apiStartTopicConversation(slug);
+        setActiveSession(result.session_id);
+        activeSessionRef.current = result.session_id;
+        skipConversationLoadForSessionRef.current = result.session_id;
+        setMessages([]);
+        setFiles([]);
+        setProgress(null);
+        setActiveRunId(null);
+        setActiveTab("chat");
+      } catch (error) {
+        console.warn("Failed to start conversation:", error);
+      }
+    }
+  };
+
+  const handleDeleteTopic = async (slug: string) => {
+    const topic = topics.find(t => t.slug === slug);
+    if (!window.confirm(`Delete topic "${topic?.name || slug}" and all its data?`)) return;
+    try {
+      await apiDeleteTopic(slug);
+      await fetchTopics();
+      if (activeTopic === slug) {
+        setActiveTopic(null);
+        startNewSessionDraft();
+      }
+    } catch (error) {
+      console.warn("Failed to delete topic:", error);
+    }
   };
 
   const refreshProgressAfterAnswer = async () => {
@@ -930,13 +1032,14 @@ export default function Chat() {
               </div>
             )}
           </div>
-          {/* Session dropdown */}
-          <SessionSelector
-            sessions={sessions}
+          {/* Topic dropdown */}
+          <TopicSelector
+            topics={topics}
+            activeTopic={activeTopic}
             activeSession={activeSession}
-            onSelectSession={(id) => { setActiveSession(id); setActiveRunId(null); setIsLoading(false); setActiveTab("chat"); }}
-            onNewSession={startNewSessionDraft}
-            onDeleteSession={deleteSession}
+            onSelectTopic={handleSelectTopic}
+            onNewTopic={() => void handleNewTopic()}
+            onDeleteTopic={handleDeleteTopic}
           />
         </div>
       </div>

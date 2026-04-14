@@ -25,6 +25,15 @@ const DOWNLOAD_ICON = (
   </svg>
 );
 
+const RENDERED_COPY_ICON = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <polyline points="14 2 14 8 20 8" />
+    <line x1="16" y1="13" x2="8" y2="13" />
+    <line x1="16" y1="17" x2="8" y2="17" />
+  </svg>
+);
+
 const ICON_BTN =
   "w-7 h-7 flex items-center justify-center rounded text-th-text-faint hover:text-th-accent hover:bg-th-surface-hover transition-colors cursor-pointer";
 
@@ -77,6 +86,7 @@ export async function copyFileContent(
   fileUrl: string,
   ext: string,
   pdfPage?: number,
+  mode: "source" | "rendered" = "source",
 ): Promise<void> {
   const isImage = /^(png|jpg|jpeg|gif|webp|svg)$/i.test(ext);
   const isPdf = ext === "pdf";
@@ -85,6 +95,22 @@ export async function copyFileContent(
   } else if (isPdf) {
     const blob = await renderPdfPageToBlob(fileUrl, pdfPage || 1);
     await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+  } else if (ext === "md" && mode === "rendered") {
+    // Copy as rich text so it pastes formatted in Google Docs, Slack, etc.
+    const r = await fetch(fileUrl);
+    const md = await r.text();
+    const { default: ReactDOMServer } = await import("react-dom/server");
+    const { default: ReactMarkdown } = await import("react-markdown");
+    const { default: remarkGfm } = await import("remark-gfm");
+    const { createElement } = await import("react");
+    const html = ReactDOMServer.renderToStaticMarkup(
+      createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, md)
+    );
+    const blob = new Blob([html], { type: "text/html" });
+    const textBlob = new Blob([md], { type: "text/plain" });
+    await navigator.clipboard.write([
+      new ClipboardItem({ "text/html": blob, "text/plain": textBlob }),
+    ]);
   } else {
     const r = await fetch(fileUrl);
     const text = await r.text();
@@ -111,20 +137,26 @@ export function FileActionButtons({
   pdfPage?: number;
 }) {
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [renderedCopyState, setRenderedCopyState] = useState<"idle" | "copied">("idle");
   const [refState, setRefState] = useState<"idle" | "copied">("idle");
   const fileUrl = getFileUrl(sessionId, filePath);
   const ext = filePath.split(".").pop()?.toLowerCase() || "";
+  const isMd = ext === "md";
 
-  const handleCopy = async () => {
+  const handleCopy = async (mode: "source" | "rendered" = "source") => {
     try {
-      await copyFileContent(fileUrl, ext, pdfPage);
+      await copyFileContent(fileUrl, ext, pdfPage, mode);
     } catch {
-      // Fallback to text
       const r = await fetch(fileUrl);
       await navigator.clipboard.writeText(await r.text());
     }
-    setCopyState("copied");
-    setTimeout(() => setCopyState("idle"), 1500);
+    if (mode === "rendered") {
+      setRenderedCopyState("copied");
+      setTimeout(() => setRenderedCopyState("idle"), 1500);
+    } else {
+      setCopyState("copied");
+      setTimeout(() => setCopyState("idle"), 1500);
+    }
   };
 
   const handleRef = () => {
@@ -137,12 +169,21 @@ export function FileActionButtons({
   return (
     <>
       <button
-        onClick={() => void handleCopy()}
+        onClick={() => void handleCopy("source")}
         className={ICON_BTN}
-        title={copyState === "copied" ? "Copied!" : "Copy content"}
+        title={copyState === "copied" ? "Copied!" : isMd ? "Copy markdown source" : "Copy content"}
       >
         {copyState === "copied" ? CHECK_ICON : COPY_ICON}
       </button>
+      {isMd && (
+        <button
+          onClick={() => void handleCopy("rendered")}
+          className={ICON_BTN}
+          title={renderedCopyState === "copied" ? "Copied formatted!" : "Copy as formatted text"}
+        >
+          {renderedCopyState === "copied" ? CHECK_ICON : RENDERED_COPY_ICON}
+        </button>
+      )}
       <button
         onClick={handleRef}
         className={ICON_BTN}

@@ -28,7 +28,7 @@ logger = logging.getLogger("cchost")
 
 
 import uvicorn
-from cchost import CCHost, CCSession
+from cchost import CCHost, CCSession, TopicManager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.responses import Response as HTTPResponse
@@ -38,7 +38,9 @@ from pydantic import BaseModel, Field
 # Global host instance
 # ============================================================
 
+
 host = CCHost(max_sessions=20)
+topic_manager = TopicManager(host)
 
 
 # ============================================================
@@ -1115,6 +1117,90 @@ _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 @app.get("/ui")
 def chat_ui():
     return FileResponse(os.path.join(_STATIC_DIR, "chat.html"), media_type="text/html")
+
+
+# ============================================================
+# Topics API
+# ============================================================
+
+
+class CreateTopicRequest(BaseModel):
+    name: str
+
+
+class TopicConversationInfo(BaseModel):
+    id: str
+    session_id: str
+    started_at: str
+    title: str = ""
+    status: str = ""
+
+
+class TopicInfo(BaseModel):
+    name: str
+    slug: str
+    created_at: str
+    conversations: list[TopicConversationInfo] = []
+
+
+@app.get("/api/topics", response_model=list[TopicInfo])
+def list_topics():
+    return topic_manager.list_topics()
+
+
+@app.post("/api/topics", response_model=TopicInfo)
+def create_topic(req: CreateTopicRequest):
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="Topic name cannot be empty")
+    return topic_manager.create_topic(req.name.strip())
+
+
+@app.get("/api/topics/{slug}", response_model=TopicInfo)
+def get_topic(slug: str):
+    try:
+        return topic_manager.get_topic(slug)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Topic not found")
+
+
+@app.delete("/api/topics/{slug}")
+def delete_topic(slug: str):
+    try:
+        topic_manager.delete_topic(slug)
+        return {"ok": True}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.post("/api/topics/{slug}/conversations")
+def start_topic_conversation(slug: str):
+    try:
+        session = topic_manager.start_conversation(slug)
+        topic = topic_manager.get_topic(slug)
+        conv = topic["conversations"][-1]
+        return {"session_id": session.id, "conversation_id": conv["id"]}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Topic not found")
+
+
+@app.post("/api/topics/{slug}/conversations/{conv_id}/resume")
+def resume_topic_conversation(slug: str, conv_id: str):
+    try:
+        session = topic_manager.resume_conversation(slug, conv_id)
+        return {"session_id": session.id}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/topics/{slug}/generate-context")
+def generate_topic_context(slug: str):
+    try:
+        content = topic_manager.generate_context(slug)
+        return {"content": content, "generated": bool(content)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Topic not found")
 
 
 # ============================================================

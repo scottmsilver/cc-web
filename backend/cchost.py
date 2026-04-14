@@ -27,9 +27,11 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1601,3 +1603,195 @@ class CCHost:
         for sid in list(self._sessions.keys()):
             self.destroy(sid)
         self._save_manifest()
+
+
+# ============================================================
+# Topic Manager
+# ============================================================
+
+TOPICS_DIR = os.path.expanduser("~/cchost-topics")
+
+
+class TopicManager:
+    """Manages persistent project workspaces (topics) that group conversations with Claude Code.
+
+    Each topic is a directory under ~/cchost-topics/ containing a .topic.json
+    metadata file and any files created during conversations.
+    """
+
+    def __init__(self, host: CCHost):
+        self.host = host
+        os.makedirs(TOPICS_DIR, exist_ok=True)
+
+    def _validate_slug(self, slug: str) -> str:
+        """Validate slug is safe and return the resolved topic_dir. Prevents path traversal."""
+        if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?", slug):
+            raise KeyError(f"Invalid topic slug: {slug}")
+        topic_dir = os.path.join(TOPICS_DIR, slug)
+        resolved = os.path.realpath(topic_dir)
+        if not resolved.startswith(os.path.realpath(TOPICS_DIR) + os.sep):
+            raise KeyError(f"Invalid topic slug: {slug}")
+        return resolved
+
+    def create_topic(self, name: str) -> dict:
+        """Create a new topic directory with .topic.json metadata."""
+        slug = self._slugify(name)
+        topic_dir = os.path.join(TOPICS_DIR, slug)
+        os.makedirs(topic_dir, exist_ok=True)
+        metadata = {
+            "name": name,
+            "slug": slug,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "conversations": [],
+        }
+        self._write_metadata(topic_dir, metadata)
+        return metadata
+
+    def list_topics(self) -> list[dict]:
+        """List all topics with their metadata."""
+        topics: list[dict] = []
+        if not os.path.isdir(TOPICS_DIR):
+            return topics
+        for entry in sorted(os.listdir(TOPICS_DIR)):
+            topic_dir = os.path.join(TOPICS_DIR, entry)
+            if not os.path.isdir(topic_dir):
+                continue
+            try:
+                metadata = self._read_metadata(topic_dir)
+                topics.append(metadata)
+            except (json.JSONDecodeError, OSError, KeyError):
+                logger.debug("Skipping corrupt topic dir: %s", topic_dir)
+                continue
+        return topics
+
+    def get_topic(self, slug: str) -> dict:
+        """Get topic metadata. Raises KeyError if not found."""
+        topic_dir = self._validate_slug(slug)
+        if not os.path.isdir(topic_dir):
+            raise KeyError(f"Topic {slug} not found")
+        try:
+            return self._read_metadata(topic_dir)
+        except (json.JSONDecodeError, OSError) as exc:
+            raise KeyError(f"Topic {slug} has corrupt metadata") from exc
+
+    def delete_topic(self, slug: str) -> None:
+        """Delete a topic directory. Raises RuntimeError if an active conversation exists."""
+        topic = self.get_topic(slug)  # validates slug
+        topic_dir = self._validate_slug(slug)
+
+        # Check if any conversation in the topic has an active session in self.host
+        for conv in topic.get("conversations", []):
+            if conv.get("status") == "active":
+                session_id = conv.get("session_id")
+                if session_id:
+                    try:
+                        session = self.host.get(session_id)
+                        if session._tmux_session is not None:
+                            raise RuntimeError("Cannot delete topic with active conversation")
+                    except KeyError:
+                        pass  # session not in host, safe to delete
+
+        shutil.rmtree(topic_dir)
+
+    def start_conversation(self, slug: str) -> CCSession:
+        """Start a new conversation in the topic. Stops any active conversation first."""
+        topic = self.get_topic(slug)  # validates slug
+        topic_dir = self._validate_slug(slug)
+
+        # Stop any active conversation
+        for conv in topic.get("conversations", []):
+            if conv.get("status") == "active":
+                try:
+                    session = self.host.get(conv["session_id"])
+                    session.destroy()
+                except KeyError:
+                    pass
+                conv["status"] = "completed"
+
+        # Persist stopped-conversation status before creating new session
+        self._write_metadata(topic_dir, topic)
+
+        # Create new session with topic dir as working_dir
+        conv_id = f"conv-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+        session = self.host.create(conv_id, working_dir=topic_dir)
+
+        # Record conversation in metadata
+        topic["conversations"].append(
+            {
+                "id": conv_id,
+                "session_id": session.id,
+                "claude_session_id": session._claude_session_id,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "title": "",
+                "status": "active",
+            }
+        )
+        self._write_metadata(topic_dir, topic)
+        return session
+
+    def resume_conversation(self, slug: str, conv_id: str) -> CCSession:
+        """Resume a previous conversation. The session must exist in CCHost."""
+        topic = self.get_topic(slug)
+        conv = next((c for c in topic["conversations"] if c["id"] == conv_id), None)
+        if not conv:
+            raise KeyError(f"Conversation {conv_id} not found in topic {slug}")
+
+        # Try to get existing session (may be dormant — host.get triggers lazy resume)
+        session = self.host.get(conv["session_id"])
+
+        # Update status
+        conv["status"] = "active"
+        topic_dir = self._validate_slug(slug)
+        self._write_metadata(topic_dir, topic)
+        return session
+
+    def generate_context(self, slug: str) -> str:
+        """Generate CLAUDE.md for a topic using /btw. Returns the generated content."""
+        topic = self.get_topic(slug)
+        topic_dir = self._validate_slug(slug)
+
+        # Find an idle session in this topic to run /btw
+        for conv in reversed(topic.get("conversations", [])):
+            try:
+                session = self.host.get(conv["session_id"])
+                if session._is_tmux_idle():
+                    prompt = (
+                        "Look at the files in this directory and the conversation history. "
+                        "Write a CLAUDE.md project context file. Include: project overview "
+                        "(1-2 sentences), key decisions made, important files and what they "
+                        "contain, current status. Keep it under 500 words. "
+                        "Output ONLY the markdown content, no explanation."
+                    )
+                    content = session.btw(prompt, timeout=90)
+                    if content and len(content) > 20:
+                        claude_md_path = os.path.join(topic_dir, "CLAUDE.md")
+                        with open(claude_md_path, "w") as f:
+                            f.write(content)
+                        return content
+            except Exception as e:
+                logger.debug("generate_context failed for %s: %s", slug, e)
+        return ""
+
+    def _slugify(self, name: str) -> str:
+        """Convert name to a filesystem-safe slug. Handle collisions with -2, -3, etc."""
+        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:64]
+        if not slug:
+            slug = "topic"
+        base = slug
+        counter = 2
+        while os.path.exists(os.path.join(TOPICS_DIR, slug)):
+            slug = f"{base}-{counter}"
+            counter += 1
+        return slug
+
+    def _write_metadata(self, topic_dir: str, metadata: dict) -> None:
+        """Write .topic.json metadata to a topic directory."""
+        path = os.path.join(topic_dir, ".topic.json")
+        with open(path, "w") as f:
+            json.dump(metadata, f, indent=2)
+
+    def _read_metadata(self, topic_dir: str) -> dict:
+        """Read .topic.json metadata from a topic directory."""
+        path = os.path.join(topic_dir, ".topic.json")
+        with open(path, "r") as f:
+            return json.load(f)
