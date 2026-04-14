@@ -1059,6 +1059,47 @@ def get_terminal(session_id: str, lines: int = 0):
     return {"terminal": session.terminal_capture(lines)}
 
 
+from starlette.websockets import WebSocket, WebSocketDisconnect
+
+
+@app.websocket("/api/sessions/{session_id}/terminal/ws")
+async def terminal_ws(websocket: WebSocket, session_id: str):
+    """Stream tmux pane output over WebSocket. Sends full scrollback on connect, then diffs."""
+    try:
+        session = host.get(session_id)
+    except KeyError:
+        await websocket.close(code=4004, reason="Session not found")
+        return
+
+    await websocket.accept()
+    import asyncio
+
+    prev_content = ""
+    try:
+        # Send full scrollback on connect
+        content = session.terminal_capture(0)
+        await websocket.send_text(content)
+        prev_content = content
+
+        # Stream updates
+        while True:
+            await asyncio.sleep(0.5)
+            try:
+                content = session.terminal_capture(0)
+                if content != prev_content:
+                    await websocket.send_text(content)
+                    prev_content = content
+            except Exception:
+                break
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 SLASH_COMMANDS = [
     {"command": "/add-dir", "description": "Add a new working directory"},
     {"command": "/clear", "description": "Clear conversation history"},
