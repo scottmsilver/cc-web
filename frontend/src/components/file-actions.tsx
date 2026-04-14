@@ -96,19 +96,18 @@ export async function copyFileContent(
     const blob = await renderPdfPageToBlob(fileUrl, pdfPage || 1);
     await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
   } else if (ext === "md" && mode === "rendered") {
-    // Copy rendered markdown from the live DOM (has CSS applied)
+    // Use Selection API to copy rendered content as rich text.
+    // This is the only reliable cross-browser way to get formatted paste.
     const viewer = document.querySelector(".prose-chat");
     if (viewer) {
-      const html = viewer.innerHTML;
-      const blob = new Blob([html], { type: "text/html" });
-      const r = await fetch(fileUrl);
-      const md = await r.text();
-      const textBlob = new Blob([md], { type: "text/plain" });
-      await navigator.clipboard.write([
-        new ClipboardItem({ "text/html": blob, "text/plain": textBlob }),
-      ]);
+      const range = document.createRange();
+      range.selectNodeContents(viewer);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      document.execCommand("copy");
+      sel?.removeAllRanges();
     } else {
-      // Fallback: copy raw markdown
       const r = await fetch(fileUrl);
       await navigator.clipboard.writeText(await r.text());
     }
