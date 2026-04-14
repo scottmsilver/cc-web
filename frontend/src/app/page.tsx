@@ -823,11 +823,9 @@ export default function Chat() {
 
   // ── Topic actions ──
 
-  const handleNewTopic = async () => {
-    const name = window.prompt("Topic name:");
-    if (!name?.trim()) return;
+  const handleNewTopic = async (name: string) => {
     try {
-      const topic = await apiCreateTopic(name.trim());
+      const topic = await apiCreateTopic(name);
       await fetchTopics();
       // Start a conversation in the new topic
       const result = await apiStartTopicConversation(topic.slug);
@@ -1038,7 +1036,7 @@ export default function Chat() {
             activeTopic={activeTopic}
             activeSession={activeSession}
             onSelectTopic={handleSelectTopic}
-            onNewTopic={() => void handleNewTopic()}
+            onCreateTopic={(name) => void handleNewTopic(name)}
             onDeleteTopic={handleDeleteTopic}
           />
         </div>

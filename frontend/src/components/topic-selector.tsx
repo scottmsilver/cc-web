@@ -8,7 +8,7 @@ type TopicSelectorProps = {
   activeTopic: string | null;
   activeSession: string | null;
   onSelectTopic: (slug: string, sessionId: string) => void;
-  onNewTopic: () => void;
+  onCreateTopic: (name: string) => void;
   onDeleteTopic: (slug: string) => void;
 };
 
@@ -17,11 +17,14 @@ export function TopicSelector({
   activeTopic,
   activeSession,
   onSelectTopic,
-  onNewTopic,
+  onCreateTopic,
   onDeleteTopic,
 }: TopicSelectorProps) {
   const [open, setOpen] = useState(false);
   const [expandedTopic, setExpandedTopic] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -61,16 +64,47 @@ export function TopicSelector({
       </button>
       {open && (
         <div className="absolute right-0 top-full z-40 mt-1 w-80 rounded-lg border border-th-border bg-th-bg shadow-xl">
-          <button
-            onClick={() => {
-              onNewTopic();
-              setOpen(false);
-              setExpandedTopic(null);
-            }}
-            className="w-full border-b border-th-border px-4 py-2.5 text-left text-sm text-th-accent hover:bg-th-surface"
-          >
-            + New topic
-          </button>
+          {creating ? (
+            <form
+              className="flex items-center gap-2 border-b border-th-border px-3 py-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (newName.trim()) {
+                  onCreateTopic(newName.trim());
+                  setCreating(false);
+                  setNewName("");
+                  setOpen(false);
+                }
+              }}
+            >
+              <input
+                ref={nameInputRef}
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Topic name..."
+                autoFocus
+                className="flex-1 rounded border border-th-border bg-th-bg px-2 py-1.5 text-sm text-th-text placeholder:text-th-text-faint focus:border-th-accent focus:outline-none"
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") { setCreating(false); setNewName(""); }
+                }}
+              />
+              <button
+                type="submit"
+                disabled={!newName.trim()}
+                className="rounded bg-th-accent px-2.5 py-1.5 text-xs font-medium text-white hover:bg-th-accent-hover disabled:opacity-40"
+              >
+                Create
+              </button>
+            </form>
+          ) : (
+            <button
+              onClick={() => setCreating(true)}
+              className="w-full border-b border-th-border px-4 py-2.5 text-left text-sm text-th-accent hover:bg-th-surface"
+            >
+              + New topic
+            </button>
+          )}
           <div className="max-h-80 overflow-y-auto">
             {topics.length === 0 ? (
               <p className="px-4 py-3 text-xs text-th-text-muted">
