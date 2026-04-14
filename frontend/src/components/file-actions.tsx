@@ -96,21 +96,22 @@ export async function copyFileContent(
     const blob = await renderPdfPageToBlob(fileUrl, pdfPage || 1);
     await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
   } else if (ext === "md" && mode === "rendered") {
-    // Copy as rich text so it pastes formatted in Google Docs, Slack, etc.
-    const r = await fetch(fileUrl);
-    const md = await r.text();
-    const { default: ReactDOMServer } = await import("react-dom/server");
-    const { default: ReactMarkdown } = await import("react-markdown");
-    const { default: remarkGfm } = await import("remark-gfm");
-    const { createElement } = await import("react");
-    const html = ReactDOMServer.renderToStaticMarkup(
-      createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, md)
-    );
-    const blob = new Blob([html], { type: "text/html" });
-    const textBlob = new Blob([md], { type: "text/plain" });
-    await navigator.clipboard.write([
-      new ClipboardItem({ "text/html": blob, "text/plain": textBlob }),
-    ]);
+    // Copy rendered markdown from the live DOM (has CSS applied)
+    const viewer = document.querySelector(".prose-chat");
+    if (viewer) {
+      const html = viewer.innerHTML;
+      const blob = new Blob([html], { type: "text/html" });
+      const r = await fetch(fileUrl);
+      const md = await r.text();
+      const textBlob = new Blob([md], { type: "text/plain" });
+      await navigator.clipboard.write([
+        new ClipboardItem({ "text/html": blob, "text/plain": textBlob }),
+      ]);
+    } else {
+      // Fallback: copy raw markdown
+      const r = await fetch(fileUrl);
+      await navigator.clipboard.writeText(await r.text());
+    }
   } else {
     const r = await fetch(fileUrl);
     const text = await r.text();
