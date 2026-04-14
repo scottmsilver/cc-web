@@ -1053,7 +1053,8 @@ async def upload_file(session_id: str, request: Request):
 
 
 @app.get("/api/sessions/{session_id}/terminal")
-def get_terminal(session_id: str, lines: int = 50):
+def get_terminal(session_id: str, lines: int = 0):
+    """Capture tmux pane output. lines=0 (default) returns full scrollback history."""
     session = _get_session_or_404(session_id)
     return {"terminal": session.terminal_capture(lines)}
 

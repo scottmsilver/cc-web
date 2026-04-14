@@ -348,7 +348,7 @@ export async function createGmailDraft(sessionId: string, threadId: string): Pro
 
 export async function fetchTerminalOutput(
   sessionId: string,
-  lines = 80,
+  lines = 0,
 ): Promise<string> {
   const res = await fetch(
     `${CCHOST_API}/api/sessions/${sessionId}/terminal?lines=${lines}`,

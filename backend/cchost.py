@@ -477,14 +477,19 @@ class CCSession:
         except Exception:
             return False
 
-    def terminal_capture(self, lines: int = 50) -> str:
-        """Capture the current tmux pane output."""
+    def terminal_capture(self, lines: int = 0) -> str:
+        """Capture the current tmux pane output. lines=0 means full scrollback."""
         if self._tmux_session is None:
             return "(session is dormant — not yet resumed)"
         try:
             pane = self._tmux_session.active_window.active_pane
-            captured = pane.capture_pane(start=-lines)
-            return "\n".join(captured)
+            if lines == 0:
+                # Full scrollback: -S - means start of history, -E - means end
+                captured = pane.cmd("capture-pane", "-p", "-S", "-", "-E", "-").stdout
+                return "\n".join(captured) if isinstance(captured, list) else str(captured)
+            else:
+                captured = pane.capture_pane(start=-lines)
+                return "\n".join(captured)
         except Exception:
             return ""
 
