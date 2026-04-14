@@ -500,6 +500,7 @@ def interrupt_session(session_id: str):
 @app.post("/api/sessions/{session_id}/runs", response_model=RunResponse)
 def create_run(session_id: str, req: SendRequest):
     session = _get_session_or_404(session_id)
+    _record_session_activity(session_id)
     run = run_manager.create_run(session_id)
 
     worker = threading.Thread(
@@ -521,6 +522,7 @@ def queue_message(session_id: str, req: SendRequest):
     while working and processes it once the current turn finishes.
     The existing progress polling will pick up the response.
     """
+    _record_session_activity(session_id)
     session = _get_session_or_404(session_id)
     try:
         result = session.queue_message(req.message)
@@ -576,6 +578,7 @@ def get_subagents(session_id: str):
 
 @app.post("/api/sessions/{session_id}/send", response_model=SendResponse)
 def send_message(session_id: str, req: SendRequest):
+    _record_session_activity(session_id)
     session = _get_session_or_404(session_id)
     run_manager.require_no_active_run(session_id)
     try:
@@ -1208,14 +1211,27 @@ def generate_topic_context(slug: str):
 # ============================================================
 
 
+_last_session_activity: dict[str, float] = {}
+
+
+def _record_session_activity(session_id: str) -> None:
+    """Record that a session was recently active (called from run endpoints)."""
+    _last_session_activity[session_id] = time.time()
+
+
 def _background_summary_refresh():
     """Periodically refresh session summaries via /btw in the background."""
     while True:
         time.sleep(60)
         try:
             for session in host.list():
-                # Skip sessions that aren't idle — don't block on active work
+                # Skip sessions that aren't idle
                 if not session._is_tmux_idle():
+                    continue
+                # Skip sessions that were active recently (< 30s ago)
+                # to avoid /btw racing with user messages
+                last_active = _last_session_activity.get(session.id, 0)
+                if time.time() - last_active < 30:
                     continue
                 try:
                     session.generate_summary()
