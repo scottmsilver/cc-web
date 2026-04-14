@@ -718,12 +718,20 @@ export default function Chat() {
       return;
     }
 
+    // Append @references for any attached Gmail threads
+    let fullMessage = message;
+    const downloadedThreads = gmailDownloads.filter(d => d.status === "downloaded");
+    if (downloadedThreads.length > 0) {
+      const refs = downloadedThreads.map(d => `@./inbox/${d.threadId}/`).join(" ");
+      fullMessage = `${message} ${refs}`;
+    }
+
     setPendingMessage(message);
     setIsLoading(true);
 
     try {
       const sessionId = await ensureSession();
-      await doStartRun(sessionId, message);
+      await doStartRun(sessionId, fullMessage);
       setActiveTab("chat");
       // Clear attachment chips after successful send
       if (gmailDownloads.length > 0) {
