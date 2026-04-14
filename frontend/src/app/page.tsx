@@ -725,6 +725,11 @@ export default function Chat() {
       const sessionId = await ensureSession();
       await doStartRun(sessionId, message);
       setActiveTab("chat");
+      // Clear attachment chips after successful send
+      if (gmailDownloads.length > 0) {
+        setGmailDownloads([]);
+        setGmailThreadIds([]);
+      }
     } catch (error: unknown) {
       setPendingMessage(null);
       setSendError(error instanceof Error ? error.message : "Failed to start run");
