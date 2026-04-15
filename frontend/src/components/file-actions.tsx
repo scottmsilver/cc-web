@@ -107,10 +107,11 @@ export async function copyFileContent(
 
     const container = document.createElement("div");
     Object.assign(container.style, {
-      position: "fixed", left: "-9999px", top: "0",
+      position: "fixed", left: "0", top: "0",
+      opacity: "0.01", zIndex: "-1", pointerEvents: "none",
       background: "white", color: "black",
       fontFamily: "system-ui, sans-serif", fontSize: "14px", lineHeight: "1.6",
-      padding: "16px", maxWidth: "800px",
+      padding: "16px", maxWidth: "800px", overflow: "hidden", height: "1px",
     });
     // Add basic block styling so spacing copies correctly
     const style = document.createElement("style");
