@@ -96,56 +96,16 @@ export async function copyFileContent(
     const blob = await renderPdfPageToBlob(fileUrl, pdfPage || 1);
     await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
   } else if (ext === "md" && mode === "rendered") {
-    // Render markdown into an off-screen element with clean default styling,
-    // then copy via Selection API. This avoids picking up theme colors.
+    // Convert markdown to HTML string via marked, then write to clipboard
     const r = await fetch(fileUrl);
     const md = await r.text();
-    const { default: ReactDOMClient } = await import("react-dom/client");
-    const { default: ReactMarkdown } = await import("react-markdown");
-    const { default: remarkGfm } = await import("remark-gfm");
-    const { createElement } = await import("react");
-
-    const container = document.createElement("div");
-    Object.assign(container.style, {
-      position: "fixed", left: "0", top: "0",
-      opacity: "0.01", zIndex: "-1", pointerEvents: "none",
-      background: "white", color: "black",
-      fontFamily: "system-ui, sans-serif", fontSize: "14px", lineHeight: "1.6",
-      padding: "16px", maxWidth: "800px", overflow: "hidden", height: "1px",
-    });
-    // Add basic block styling so spacing copies correctly
-    const style = document.createElement("style");
-    style.textContent = `
-      .copy-md h1, .copy-md h2, .copy-md h3, .copy-md h4 { margin: 1em 0 0.5em; font-weight: bold; }
-      .copy-md h1 { font-size: 1.5em; } .copy-md h2 { font-size: 1.3em; } .copy-md h3 { font-size: 1.1em; }
-      .copy-md p { margin: 0.5em 0; } .copy-md ul, .copy-md ol { margin: 0.5em 0; padding-left: 1.5em; }
-      .copy-md li { margin: 0.25em 0; } .copy-md blockquote { margin: 0.5em 0; padding-left: 1em; border-left: 3px solid #ccc; }
-      .copy-md pre { margin: 0.5em 0; padding: 0.5em; background: #f5f5f5; font-family: monospace; font-size: 0.9em; white-space: pre-wrap; }
-      .copy-md code { font-family: monospace; font-size: 0.9em; background: #f0f0f0; padding: 0.1em 0.3em; border-radius: 3px; }
-      .copy-md pre code { background: none; padding: 0; }
-      .copy-md table { border-collapse: collapse; margin: 0.5em 0; } .copy-md td, .copy-md th { border: 1px solid #ccc; padding: 0.3em 0.6em; }
-      .copy-md hr { margin: 1em 0; border: none; border-top: 1px solid #ccc; }
-      .copy-md strong { font-weight: bold; } .copy-md em { font-style: italic; }
-    `;
-    container.appendChild(style);
-    container.classList.add("copy-md");
-    document.body.appendChild(container);
-
-    const root = ReactDOMClient.createRoot(container);
-    root.render(createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, md));
-    // Wait for render
-    await new Promise((res) => setTimeout(res, 50));
-
-    const range = document.createRange();
-    range.selectNodeContents(container);
-    const sel = window.getSelection();
-    sel?.removeAllRanges();
-    sel?.addRange(range);
-    document.execCommand("copy");
-    sel?.removeAllRanges();
-
-    root.unmount();
-    document.body.removeChild(container);
+    const { marked } = await import("marked");
+    const html = await marked(md, { gfm: true, breaks: true });
+    const htmlBlob = new Blob([html], { type: "text/html" });
+    const textBlob = new Blob([md], { type: "text/plain" });
+    await navigator.clipboard.write([
+      new ClipboardItem({ "text/html": htmlBlob, "text/plain": textBlob }),
+    ]);
   } else {
     const r = await fetch(fileUrl);
     const text = await r.text();
