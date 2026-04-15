@@ -1290,8 +1290,9 @@ def _background_summary_refresh():
             pass
 
 
-_summary_thread = threading.Thread(target=_background_summary_refresh, daemon=True)
-_summary_thread.start()
+# DISABLED: background /btw was interrupting active conversations
+# _summary_thread = threading.Thread(target=_background_summary_refresh, daemon=True)
+# _summary_thread.start()
 
 
 # ============================================================
