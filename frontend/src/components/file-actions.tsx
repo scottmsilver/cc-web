@@ -98,7 +98,7 @@ export async function copyFileContent(
   } else if (ext === "md" && mode === "rendered") {
     // Use Selection API to copy rendered content as rich text.
     // This is the only reliable cross-browser way to get formatted paste.
-    const viewer = document.querySelector(".prose-chat");
+    const viewer = document.querySelector(".prose-file-viewer");
     if (viewer) {
       const range = document.createRange();
       range.selectNodeContents(viewer);

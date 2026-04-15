@@ -143,7 +143,7 @@ function ThreadJsonView({ content, sessionId }: { content: string; sessionId: st
 /* ── Markdown ── */
 function MarkdownView({ content }: { content: string }) {
   return (
-    <div className="prose-chat p-4">
+    <div className="prose-chat prose-file-viewer p-4">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
     </div>
   );
