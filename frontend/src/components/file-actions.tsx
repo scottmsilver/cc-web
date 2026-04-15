@@ -103,9 +103,14 @@ export async function copyFileContent(
     const { default: ReactMarkdown } = await import("react-markdown");
     const { default: remarkGfm } = await import("remark-gfm");
     const { createElement } = await import("react");
-    const html = ReactDOMServer.renderToStaticMarkup(
+    let html = ReactDOMServer.renderToStaticMarkup(
       createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, md),
     );
+    // Collapse newlines so paste targets don't add extra line breaks.
+    // Split on <pre> blocks to preserve their internal newlines.
+    html = html.split(/(<pre[\s>][\s\S]*?<\/pre>)/g).map((chunk, i) =>
+      i % 2 === 1 ? chunk : chunk.replace(/\n+/g, " "),
+    ).join("");
     const htmlBlob = new Blob([html], { type: "text/html" });
     const textBlob = new Blob([md], { type: "text/plain" });
     await navigator.clipboard.write([
