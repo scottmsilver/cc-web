@@ -112,6 +112,22 @@ export async function copyFileContent(
       fontFamily: "system-ui, sans-serif", fontSize: "14px", lineHeight: "1.6",
       padding: "16px", maxWidth: "800px",
     });
+    // Add basic block styling so spacing copies correctly
+    const style = document.createElement("style");
+    style.textContent = `
+      .copy-md h1, .copy-md h2, .copy-md h3, .copy-md h4 { margin: 1em 0 0.5em; font-weight: bold; }
+      .copy-md h1 { font-size: 1.5em; } .copy-md h2 { font-size: 1.3em; } .copy-md h3 { font-size: 1.1em; }
+      .copy-md p { margin: 0.5em 0; } .copy-md ul, .copy-md ol { margin: 0.5em 0; padding-left: 1.5em; }
+      .copy-md li { margin: 0.25em 0; } .copy-md blockquote { margin: 0.5em 0; padding-left: 1em; border-left: 3px solid #ccc; }
+      .copy-md pre { margin: 0.5em 0; padding: 0.5em; background: #f5f5f5; font-family: monospace; font-size: 0.9em; white-space: pre-wrap; }
+      .copy-md code { font-family: monospace; font-size: 0.9em; background: #f0f0f0; padding: 0.1em 0.3em; border-radius: 3px; }
+      .copy-md pre code { background: none; padding: 0; }
+      .copy-md table { border-collapse: collapse; margin: 0.5em 0; } .copy-md td, .copy-md th { border: 1px solid #ccc; padding: 0.3em 0.6em; }
+      .copy-md hr { margin: 1em 0; border: none; border-top: 1px solid #ccc; }
+      .copy-md strong { font-weight: bold; } .copy-md em { font-style: italic; }
+    `;
+    container.appendChild(style);
+    container.classList.add("copy-md");
     document.body.appendChild(container);
 
     const root = ReactDOMClient.createRoot(container);
