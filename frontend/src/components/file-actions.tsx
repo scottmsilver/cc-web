@@ -96,11 +96,16 @@ export async function copyFileContent(
     const blob = await renderPdfPageToBlob(fileUrl, pdfPage || 1);
     await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
   } else if (ext === "md" && mode === "rendered") {
-    // Convert markdown to HTML string via marked, then write to clipboard
+    // Convert markdown to HTML string via react-markdown (already a dep), write to clipboard
     const r = await fetch(fileUrl);
     const md = await r.text();
-    const { marked } = await import("marked");
-    const html = await marked(md, { gfm: true, breaks: true });
+    const { default: ReactDOMServer } = await import("react-dom/server");
+    const { default: ReactMarkdown } = await import("react-markdown");
+    const { default: remarkGfm } = await import("remark-gfm");
+    const { createElement } = await import("react");
+    const html = ReactDOMServer.renderToStaticMarkup(
+      createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, md),
+    );
     const htmlBlob = new Blob([html], { type: "text/html" });
     const textBlob = new Blob([md], { type: "text/plain" });
     await navigator.clipboard.write([
