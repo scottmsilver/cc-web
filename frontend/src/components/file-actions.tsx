@@ -96,21 +96,39 @@ export async function copyFileContent(
     const blob = await renderPdfPageToBlob(fileUrl, pdfPage || 1);
     await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
   } else if (ext === "md" && mode === "rendered") {
-    // Use Selection API to copy rendered content as rich text.
-    // This is the only reliable cross-browser way to get formatted paste.
-    const viewer = document.querySelector(".prose-file-viewer");
-    if (viewer) {
-      const range = document.createRange();
-      range.selectNodeContents(viewer);
-      const sel = window.getSelection();
-      sel?.removeAllRanges();
-      sel?.addRange(range);
-      document.execCommand("copy");
-      sel?.removeAllRanges();
-    } else {
-      const r = await fetch(fileUrl);
-      await navigator.clipboard.writeText(await r.text());
-    }
+    // Render markdown into an off-screen element with clean default styling,
+    // then copy via Selection API. This avoids picking up theme colors.
+    const r = await fetch(fileUrl);
+    const md = await r.text();
+    const { default: ReactDOMClient } = await import("react-dom/client");
+    const { default: ReactMarkdown } = await import("react-markdown");
+    const { default: remarkGfm } = await import("remark-gfm");
+    const { createElement } = await import("react");
+
+    const container = document.createElement("div");
+    Object.assign(container.style, {
+      position: "fixed", left: "-9999px", top: "0",
+      background: "white", color: "black",
+      fontFamily: "system-ui, sans-serif", fontSize: "14px", lineHeight: "1.6",
+      padding: "16px", maxWidth: "800px",
+    });
+    document.body.appendChild(container);
+
+    const root = ReactDOMClient.createRoot(container);
+    root.render(createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, md));
+    // Wait for render
+    await new Promise((res) => setTimeout(res, 50));
+
+    const range = document.createRange();
+    range.selectNodeContents(container);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    document.execCommand("copy");
+    sel?.removeAllRanges();
+
+    root.unmount();
+    document.body.removeChild(container);
   } else {
     const r = await fetch(fileUrl);
     const text = await r.text();
