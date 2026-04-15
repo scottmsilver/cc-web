@@ -991,13 +991,14 @@ class CCSession:
         if not self._tmux_lock.acquire(timeout=lock_timeout):
             raise RuntimeError("Session is busy (locked)")
         try:
-            # Wait for idle (previous btw overlay may still be dismissing)
-            for _ in range(15):
-                if self._is_tmux_idle():
+            # /btw is safe to type anytime. Just wait briefly if a previous
+            # overlay is still dismissing.
+            for _ in range(5):
+                content = self._tmux_session.active_window.active_pane.cmd("capture-pane", "-p").stdout
+                text = "\n".join(content) if isinstance(content, list) else str(content)
+                if not _has_overlay_footer(text):
                     break
                 time.sleep(1)
-            else:
-                raise RuntimeError("Session is busy")
 
             pane = self._tmux_session.active_window.active_pane
             pane.send_keys(f"/btw {question}", enter=True)
@@ -1037,9 +1038,15 @@ class CCSession:
                                 response_lines.append(stripped)
                     break
 
-            # Dismiss the overlay and wait for it to clear
-            pane.send_keys("Escape", enter=False)
-            time.sleep(1.5)
+            # Dismiss the overlay only if we found one
+            if response_lines or _has_overlay_footer(
+                "\n".join(pane.cmd("capture-pane", "-p").stdout)
+                if isinstance(pane.cmd("capture-pane", "-p").stdout, list)
+                else str(pane.cmd("capture-pane", "-p").stdout)
+            ):
+                # Use Space to dismiss (safer than Escape which could interrupt Claude)
+                pane.send_keys("Space", enter=False)
+                time.sleep(1.0)
 
             return "\n".join(response_lines)
         finally:

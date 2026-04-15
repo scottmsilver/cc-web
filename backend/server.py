@@ -1264,16 +1264,19 @@ def _record_session_activity(session_id: str) -> None:
 def _background_summary_refresh():
     """Periodically refresh session summaries via /btw in the background."""
     while True:
-        time.sleep(60)
+        time.sleep(120)
         try:
             for session in host.list():
-                # Skip sessions that aren't idle
+                # Skip sessions that aren't idle in tmux
                 if not session._is_tmux_idle():
                     continue
-                # Skip sessions that were active recently (< 30s ago)
-                # to avoid /btw racing with user messages
+                # Skip sessions with active runs in the RunManager
+                active_run = run_manager.get_run_for_session(session.id)
+                if active_run and active_run.status in ("pending", "running", "waiting_for_input"):
+                    continue
+                # Skip sessions that were active recently (< 60s ago)
                 last_active = _last_session_activity.get(session.id, 0)
-                if time.time() - last_active < 30:
+                if time.time() - last_active < 60:
                     continue
                 try:
                     session.generate_summary()
