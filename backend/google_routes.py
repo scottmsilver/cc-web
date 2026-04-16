@@ -21,6 +21,7 @@ import base64
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 import zipfile
@@ -349,16 +350,50 @@ def gmail_scan(req: GmailScanRequest):
 GMAIL_SEARCH_URL = os.environ.get("GMAIL_SEARCH_URL", "http://localhost:8081")
 
 
+def _strip_gmail_operators(query: str) -> str:
+    """Convert Gmail query syntax to natural language for semantic search.
+
+    Keeps values from subject: and from: (useful context).
+    Drops filter-only operators (has:, newer_than:, older_than:, in:, is:, label:).
+    """
+    parts: list[str] = []
+    work = query
+    # Extract and remove quoted operator values first (subject:"Silver Remodel")
+    for match in re.finditer(r'\b(subject|from|to):"([^"]*)"', work):
+        parts.append(match.group(2))
+    work = re.sub(r'\b(subject|from|to):"[^"]*"', "", work)
+    # Extract and remove unquoted operator values (subject:draw, from:scott)
+    for match in re.finditer(r"\b(subject|from|to):(\S+)", work):
+        parts.append(match.group(2))
+    work = re.sub(r"\b(subject|from|to):\S+", "", work)
+    # Remove remaining filter-only operators (has:, newer_than:, etc.)
+    remainder = re.sub(r'\b\w+:"[^"]*"', "", work)
+    remainder = re.sub(r"\b\w+:\S+", "", remainder)
+    # Remove boolean operators
+    remainder = re.sub(r"\b(AND|OR|NOT)\b", "", remainder, flags=re.IGNORECASE)
+    remainder = re.sub(r"\s+", " ", remainder).strip()
+    if remainder:
+        parts.append(remainder)
+    return " ".join(parts)
+
+
 @router.post("/api/gmail/semantic-search", response_model=list[ThreadSummary])
 def gmail_semantic_search(req: SemanticSearchRequest):
     """Semantic search via gmail-search engine. Falls back to Gmail API scan on failure."""
     import requests as _requests
 
+    # Strip Gmail query operators for semantic search
+    clean_query = _strip_gmail_operators(req.query)
+    if not clean_query:
+        # Query was entirely operators (e.g., "has:attachment newer_than:90d")
+        # Fall back to Gmail API which understands these
+        return gmail_scan(GmailScanRequest(query=req.query))
+
     downloaded = _load_downloaded_threads()
     try:
         resp = _requests.get(
             f"{GMAIL_SEARCH_URL}/api/search",
-            params={"q": req.query, "k": req.k},
+            params={"q": clean_query, "k": req.k},
             timeout=10,
         )
         resp.raise_for_status()
