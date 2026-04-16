@@ -10,6 +10,8 @@ export type GmailThread = {
   message_count: number;
   attachment_count: number;
   downloaded: boolean;
+  score?: number;
+  snippet?: string;
 };
 
 // ── Sessions ──
@@ -323,6 +325,16 @@ export async function scanGmail(query?: string): Promise<GmailThread[]> {
     body: JSON.stringify({ query: query || "has:attachment newer_than:90d" }),
   });
   if (!res.ok) throw new Error(`Scan failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function searchGmailSemantic(query: string, k = 20): Promise<GmailThread[]> {
+  const res = await fetch(`${CCHOST_API}/api/gmail/semantic-search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, k }),
+  });
+  if (!res.ok) throw new Error(`Search failed: HTTP ${res.status}`);
   return res.json();
 }
 

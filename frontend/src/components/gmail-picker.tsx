@@ -6,6 +6,7 @@ import {
   fetchGmailStatus,
   getGmailAuthUrl,
   scanGmail,
+  searchGmailSemantic,
   type GmailThread,
 } from "@/lib/api";
 
@@ -122,11 +123,19 @@ export function GmailPicker({
     setScanning(true);
     setError(null);
     setSelected(new Set());
+    const q = query || searchQuery;
     try {
-      const results = await scanGmail(query || searchQuery);
+      // Use semantic search (falls back to Gmail API scan on failure)
+      const results = await searchGmailSemantic(q);
       setThreads(results);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Scan failed");
+    } catch {
+      // Direct fallback to scan
+      try {
+        const results = await scanGmail(q);
+        setThreads(results);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "Search failed");
+      }
     } finally {
       setScanning(false);
     }
@@ -294,12 +303,21 @@ export function GmailPicker({
                   <div className="flex items-center gap-3 mt-0.5">
                     <span className="truncate text-xs text-th-text-muted">{thread.sender}</span>
                     <span className="text-xs text-th-text-faint">{thread.date}</span>
+                    {thread.message_count > 1 && (
+                      <span className="text-xs text-th-text-faint">{thread.message_count} msgs</span>
+                    )}
                     {thread.attachment_count > 0 && (
                       <span className="text-xs text-th-text-muted">
                         {thread.attachment_count} attachment{thread.attachment_count !== 1 ? "s" : ""}
                       </span>
                     )}
+                    {thread.score != null && (
+                      <span className="text-[10px] text-th-text-faint">{Math.round(thread.score * 100)}%</span>
+                    )}
                   </div>
+                  {thread.snippet && (
+                    <div className="mt-0.5 text-xs text-th-text-faint truncate">{thread.snippet}</div>
+                  )}
                 </div>
               </label>
             ))}

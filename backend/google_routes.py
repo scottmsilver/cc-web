@@ -148,6 +148,13 @@ class ThreadSummary(BaseModel):
     message_count: int = 1
     attachment_count: int = 0
     downloaded: bool = False
+    score: float | None = None
+    snippet: str = ""
+
+
+class SemanticSearchRequest(BaseModel):
+    query: str
+    k: int = 20
 
 
 class SearchThreadSummary(BaseModel):
@@ -337,6 +344,55 @@ def gmail_scan(req: GmailScanRequest):
         )
 
     return list(seen_threads.values())
+
+
+GMAIL_SEARCH_URL = os.environ.get("GMAIL_SEARCH_URL", "http://localhost:8081")
+
+
+@router.post("/api/gmail/semantic-search", response_model=list[ThreadSummary])
+def gmail_semantic_search(req: SemanticSearchRequest):
+    """Semantic search via gmail-search engine. Falls back to Gmail API scan on failure."""
+    import requests as _requests
+
+    downloaded = _load_downloaded_threads()
+    try:
+        resp = _requests.get(
+            f"{GMAIL_SEARCH_URL}/api/search",
+            params={"q": req.query, "k": req.k},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        logger.warning("gmail-search unavailable (%s), falling back to scan", e)
+        # Fall back to Gmail API scan
+        return gmail_scan(GmailScanRequest(query=req.query))
+
+    results = []
+    for r in data.get("results", []):
+        # Extract first sender from participants
+        participants = r.get("participants", [])
+        sender = participants[0] if participants else ""
+        # Get snippet from first match
+        matches = r.get("matches", [])
+        snippet = ""
+        if matches:
+            snippet = matches[0].get("snippet", "")
+
+        results.append(
+            ThreadSummary(
+                id=r["thread_id"],
+                subject=r.get("subject", ""),
+                sender=sender,
+                date=r.get("date_last", r.get("date_first", "")),
+                message_count=r.get("message_count", 1),
+                attachment_count=0,  # gmail-search doesn't return this directly
+                downloaded=r["thread_id"] in downloaded,
+                score=r.get("score"),
+                snippet=snippet,
+            )
+        )
+    return results
 
 
 @router.post("/api/gmail/search", response_model=list[SearchThreadSummary])
