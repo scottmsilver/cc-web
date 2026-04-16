@@ -338,6 +338,26 @@ export async function searchGmailSemantic(query: string, k = 20): Promise<GmailT
   return res.json();
 }
 
+export type GmailPreviewMessage = {
+  from: string;
+  to: string;
+  date: string;
+  body_text: string;
+};
+
+export type GmailThreadPreview = {
+  id: string;
+  subject: string;
+  messages: GmailPreviewMessage[];
+  attachments: string[];
+};
+
+export async function fetchGmailThreadPreview(threadId: string): Promise<GmailThreadPreview> {
+  const res = await fetch(`${CCHOST_API}/api/gmail/thread/${encodeURIComponent(threadId)}/preview`);
+  if (!res.ok) throw new Error(`Preview failed: HTTP ${res.status}`);
+  return res.json();
+}
+
 export async function analyzeThread(threadId: string): Promise<{ session_id: string; run_id: string }> {
   const res = await fetch(`${CCHOST_API}/api/inbox/analyze/${threadId}`, {
     method: "POST",

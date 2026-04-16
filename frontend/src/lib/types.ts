@@ -2,6 +2,7 @@ export type ContentBlock = {
   type?: string;
   text?: string;
   thinking?: string;
+  signature?: string;
   name?: string;
   id?: string;
   input?: Record<string, unknown>;
@@ -11,12 +12,25 @@ export type ContentBlock = {
 
 export type JsonlEntry = {
   type?: string;
+  subtype?: string;
+  uuid?: string;
+  parentUuid?: string;
+  timestamp?: string;
   message?: {
     content?: (ContentBlock | string)[] | string;
     role?: string;
     model?: string;
   };
   [key: string]: unknown;
+};
+
+export type TranscriptTask = {
+  id: string;
+  subject: string;
+  description?: string;
+  activeForm?: string;
+  status: "pending" | "in_progress" | "completed";
+  order: number;
 };
 
 export type QuestionOption = {

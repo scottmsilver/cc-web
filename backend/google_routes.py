@@ -342,6 +342,7 @@ def gmail_scan(req: GmailScanRequest):
             message_count=len(thread_messages),
             attachment_count=total_attachments,
             downloaded=thread_id in downloaded,
+            snippet=first_msg.get("snippet", ""),
         )
 
     return list(seen_threads.values())
@@ -466,6 +467,55 @@ def gmail_search(req: GmailSearchRequest):
         )
 
     return summaries
+
+
+class ThreadPreviewMessage(BaseModel):
+    from_: str = Field(default="", alias="from")
+    to: str = ""
+    date: str = ""
+    body_text: str = ""
+
+    model_config = {"populate_by_name": True}
+
+
+class ThreadPreview(BaseModel):
+    id: str
+    subject: str = ""
+    messages: list[ThreadPreviewMessage] = Field(default_factory=list)
+    attachments: list[str] = Field(default_factory=list)
+
+
+@router.get("/api/gmail/thread/{thread_id}/preview", response_model=ThreadPreview)
+def gmail_thread_preview(thread_id: str):
+    """Fetch a compact preview of one Gmail thread (body text + headers)."""
+    creds = _get_authenticated_credentials()
+    gmail = google_service.build_gmail_service(creds)
+
+    thread = _gmail_api_call(lambda: gmail.users().threads().get(userId="me", id=thread_id, format="full").execute())
+
+    tmsgs = thread.get("messages", [])
+    subject = ""
+    messages: list[ThreadPreviewMessage] = []
+    attachments: list[str] = []
+    for msg in tmsgs:
+        payload = msg.get("payload", {})
+        headers = payload.get("headers", [])
+        if not subject:
+            subject = _extract_header(headers, "Subject")
+        messages.append(
+            ThreadPreviewMessage(
+                **{"from": _extract_header(headers, "From")},
+                to=_extract_header(headers, "To"),
+                date=_extract_header(headers, "Date"),
+                body_text=_extract_body_text(payload),
+            )
+        )
+        for part in _extract_attachment_parts(payload):
+            fn = os.path.basename(part.get("filename") or "")
+            if fn:
+                attachments.append(fn)
+
+    return ThreadPreview(id=thread_id, subject=subject, messages=messages, attachments=attachments)
 
 
 # ===========================================================================

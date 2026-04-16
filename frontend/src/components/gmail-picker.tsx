@@ -4,11 +4,14 @@ import { useEffect, useState } from "react";
 
 import {
   fetchGmailStatus,
+  fetchGmailThreadPreview,
   getGmailAuthUrl,
   scanGmail,
   searchGmailSemantic,
   type GmailThread,
+  type GmailThreadPreview,
 } from "@/lib/api";
+import { formatEmailDate } from "@/lib/format-date";
 
 export type SelectedThread = {
   id: string;
@@ -161,7 +164,7 @@ export function GmailPicker({
 
   if (loading) {
     return (
-      <div className="w-full max-h-[400px] rounded-lg border border-th-border bg-th-bg shadow-lg p-8 flex items-center justify-center">
+      <div className="w-full max-h-[min(80vh,640px)] rounded-lg border border-th-border bg-th-bg shadow-lg p-8 flex items-center justify-center">
         <p className="text-sm text-th-text-muted">Checking Gmail connection...</p>
       </div>
     );
@@ -169,7 +172,7 @@ export function GmailPicker({
 
   if (!connected) {
     return (
-      <div className="w-full max-h-[400px] rounded-lg border border-th-border bg-th-bg shadow-lg p-8">
+      <div className="w-full max-h-[min(80vh,640px)] rounded-lg border border-th-border bg-th-bg shadow-lg p-8">
         <div className="flex items-center justify-between mb-4">
           <span className="text-sm font-medium text-th-text">From Gmail</span>
           <button onClick={onClose} className="text-th-text-muted hover:text-th-text text-sm">✕</button>
@@ -199,7 +202,7 @@ export function GmailPicker({
   }
 
   return (
-    <div className="w-full max-h-[400px] rounded-lg border border-th-border bg-th-bg shadow-lg flex flex-col overflow-hidden">
+    <div className="w-full max-h-[min(80vh,640px)] rounded-lg border border-th-border bg-th-bg shadow-lg flex flex-col overflow-hidden">
       {/* Header */}
       <div className="border-b border-th-border px-4 py-3 space-y-2 flex-shrink-0">
         <div className="flex items-center justify-between">
@@ -279,47 +282,14 @@ export function GmailPicker({
         )}
 
         {threads.length > 0 && (
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {threads.map((thread) => (
-              <label
+              <ThreadRow
                 key={thread.id}
-                className="flex items-center gap-3 rounded-lg border border-th-border px-4 py-3 hover:bg-th-surface cursor-pointer"
-              >
-                <input
-                  type="checkbox"
-                  checked={selected.has(thread.id)}
-                  onChange={() => toggleThread(thread.id)}
-                  className="rounded border-th-border"
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-medium text-th-text">
-                      {thread.subject}
-                    </span>
-                    {thread.downloaded && (
-                      <span className="text-xs text-th-accent">✓</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-3 mt-0.5">
-                    <span className="truncate text-xs text-th-text-muted">{thread.sender}</span>
-                    <span className="text-xs text-th-text-faint">{thread.date}</span>
-                    {thread.message_count > 1 && (
-                      <span className="text-xs text-th-text-faint">{thread.message_count} msgs</span>
-                    )}
-                    {thread.attachment_count > 0 && (
-                      <span className="text-xs text-th-text-muted">
-                        {thread.attachment_count} attachment{thread.attachment_count !== 1 ? "s" : ""}
-                      </span>
-                    )}
-                    {thread.score != null && (
-                      <span className="text-[10px] text-th-text-faint">{Math.round(thread.score * 100)}%</span>
-                    )}
-                  </div>
-                  {thread.snippet && (
-                    <div className="mt-0.5 text-xs text-th-text-faint truncate">{thread.snippet}</div>
-                  )}
-                </div>
-              </label>
+                thread={thread}
+                checked={selected.has(thread.id)}
+                onToggle={() => toggleThread(thread.id)}
+              />
             ))}
           </div>
         )}
@@ -335,6 +305,152 @@ export function GmailPicker({
           >
             Attach Selected ({selected.size})
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThreadRow({
+  thread,
+  checked,
+  onToggle,
+}: {
+  thread: GmailThread;
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [preview, setPreview] = useState<GmailThreadPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  const toggleExpanded = async () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && !preview && !previewLoading) {
+      setPreviewLoading(true);
+      setPreviewError(null);
+      try {
+        const p = await fetchGmailThreadPreview(thread.id);
+        setPreview(p);
+      } catch (err) {
+        setPreviewError(err instanceof Error ? err.message : "Preview failed");
+      } finally {
+        setPreviewLoading(false);
+      }
+    }
+  };
+
+  const formattedDate = formatEmailDate(thread.date);
+
+  return (
+    <div className="rounded-lg border border-th-border hover:bg-th-surface/40">
+      <div className="flex items-start gap-2 px-3 py-2">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={onToggle}
+          className="mt-1 rounded border-th-border flex-shrink-0"
+        />
+        <button
+          type="button"
+          onClick={() => void toggleExpanded()}
+          className="flex-1 min-w-0 text-left"
+          aria-expanded={expanded}
+        >
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-sm font-medium text-th-text">
+              {thread.subject || "(no subject)"}
+            </span>
+            {thread.downloaded && <span className="text-xs text-th-accent flex-shrink-0">✓</span>}
+            {thread.score != null && (
+              <span className="ml-auto text-[10px] text-th-text-faint flex-shrink-0">
+                {Math.round(thread.score * 100)}%
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 mt-0.5 text-xs">
+            <span className="truncate text-th-text-muted">{thread.sender}</span>
+            <span className="text-th-text-faint flex-shrink-0">·</span>
+            <span className="text-th-text-faint flex-shrink-0" title={thread.date}>
+              {formattedDate}
+            </span>
+            {thread.message_count > 1 && (
+              <>
+                <span className="text-th-text-faint flex-shrink-0">·</span>
+                <span className="text-th-text-faint flex-shrink-0">{thread.message_count} msgs</span>
+              </>
+            )}
+            {thread.attachment_count > 0 && (
+              <>
+                <span className="text-th-text-faint flex-shrink-0">·</span>
+                <span className="text-th-text-muted flex-shrink-0">
+                  📎 {thread.attachment_count}
+                </span>
+              </>
+            )}
+          </div>
+          {thread.snippet && !expanded && (
+            <div
+              className="mt-1 text-xs text-th-text-faint overflow-hidden"
+              style={{
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+              }}
+            >
+              {thread.snippet}
+            </div>
+          )}
+        </button>
+        <span
+          className={`mt-1 text-xs text-th-text-faint transition-transform flex-shrink-0 ${expanded ? "rotate-90" : ""}`}
+          aria-hidden
+        >
+          ▶
+        </span>
+      </div>
+      {expanded && (
+        <div className="border-t border-th-border px-3 py-2 bg-th-surface/30">
+          {previewLoading && (
+            <p className="text-xs text-th-text-muted">Loading preview…</p>
+          )}
+          {previewError && (
+            <p className="text-xs text-th-error-text">{previewError}</p>
+          )}
+          {preview && (
+            <div className="space-y-3">
+              {preview.messages.map((m, i) => (
+                <div key={i} className="space-y-1">
+                  <div className="text-[11px] text-th-text-muted">
+                    <span className="font-medium">{m.from}</span>
+                    {m.date && (
+                      <span className="ml-2 text-th-text-faint" title={m.date}>
+                        {formatEmailDate(m.date)}
+                      </span>
+                    )}
+                  </div>
+                  <pre className="whitespace-pre-wrap break-words text-xs text-th-text font-sans max-h-64 overflow-y-auto">
+                    {m.body_text.trim() || "(no text body)"}
+                  </pre>
+                </div>
+              ))}
+              {preview.attachments.length > 0 && (
+                <div className="text-[11px] text-th-text-muted">
+                  Attachments: {preview.attachments.join(", ")}
+                </div>
+              )}
+              <a
+                href={`https://mail.google.com/mail/u/0/#inbox/${thread.id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-block text-[11px] text-th-accent hover:underline"
+              >
+                Open in Gmail ↗
+              </a>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -19,7 +19,8 @@ import type { GmailDownload } from "@/components/chat-input";
 import { DraftExportButtons } from "@/components/draft-export-buttons";
 import { SessionSelector } from "@/components/session-selector";
 import { TopicSelector } from "@/components/topic-selector";
-import type { Topic } from "@/lib/types";
+import type { Topic, TranscriptTask } from "@/lib/types";
+import { TaskPanel } from "@/components/task-panel";
 import { TabBar, type TabId } from "@/components/tab-bar";
 import { isBinaryFile, getFileName, groupByDirectory, CCHOST_API } from "@/lib/config";
 import {
@@ -298,6 +299,7 @@ export default function Chat() {
   const [activeTab, setActiveTab] = useState<TabId>("chat");
   const [viewingFile, setViewingFile] = useState<string | null>(null);
   const [viewingImages, setViewingImages] = useState<{ images: string[]; index: number } | null>(null);
+  const [transcriptTasks, setTranscriptTasks] = useState<TranscriptTask[]>([]);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
   const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
   const [themeId, setThemeId] = useState("light");
@@ -1070,6 +1072,7 @@ export default function Chat() {
                   queuedMessages={queuedMessages}
                   isWorking={isLoading}
                   refreshKey={jsonlRefreshKey}
+                  onTasksChange={setTranscriptTasks}
                 />
 
                 {progress?.pending_question && (
@@ -1178,6 +1181,10 @@ export default function Chat() {
               onSelectFile={setViewingFile}
               onClose={() => setViewingFile(null)}
             />
+          ) : transcriptTasks.length > 0 ? (
+            <div className="flex h-full flex-col p-3 overflow-y-auto">
+              <TaskPanel tasks={transcriptTasks} />
+            </div>
           ) : null;
 
           return (

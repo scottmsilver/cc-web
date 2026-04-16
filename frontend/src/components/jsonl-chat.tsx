@@ -7,7 +7,8 @@ import remarkGfm from "remark-gfm";
 import { fetchJsonl } from "@/lib/api";
 import { FileLink, makeFileUrl } from "@/components/file-link";
 import { CCHOST_API, getFileName } from "@/lib/config";
-import type { ContentBlock, JsonlEntry } from "@/lib/types";
+import { buildTaskList, formatDurationMs } from "@/lib/transcript";
+import type { ContentBlock, JsonlEntry, TranscriptTask } from "@/lib/types";
 
 /* ── File reference chip for user messages ── */
 const IMAGE_EXT = /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i;
@@ -156,7 +157,209 @@ function renderUserText(text: string, sessionId: string, files: string[], onView
   return parts;
 }
 
-/* ── Tool call (collapsed, click to expand) ── */
+/* ── Thinking ── */
+function ThinkingBlock({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const firstLine = trimmed.split("\n").find((l) => l.trim()) || "";
+  return (
+    <div className="py-1">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="text-left w-full text-xs text-th-text-faint italic hover:text-th-text-muted"
+      >
+        <span className="mr-1 not-italic font-mono text-[10px] uppercase tracking-wider">thinking</span>
+        {open ? "" : firstLine.substring(0, 120) + (firstLine.length > 120 ? "…" : "")}
+      </button>
+      {open && (
+        <pre className="mt-1 text-[11px] text-th-text-muted italic whitespace-pre-wrap border-l-2 border-th-border pl-3 ml-2 font-sans">
+          {trimmed}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/* ── Plan card (ExitPlanMode) ── */
+function PlanCard({ block }: { block: ContentBlock }) {
+  const inp = block.input || {};
+  const plan = typeof inp.plan === "string" ? inp.plan : "";
+  const allowed = Array.isArray(inp.allowedPrompts)
+    ? (inp.allowedPrompts as Array<{ tool?: string; prompt?: string }>)
+    : [];
+  return (
+    <div className="my-2 rounded-lg border border-th-accent/40 bg-th-accent/5 overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-th-accent/30 bg-th-accent/10">
+        <span className="text-xs font-semibold text-th-accent uppercase tracking-wide">Plan</span>
+      </div>
+      <div className="px-3 py-2 prose-chat text-[13px] text-th-text">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{plan}</ReactMarkdown>
+      </div>
+      {allowed.length > 0 && (
+        <div className="border-t border-th-accent/30 bg-th-accent/5 px-3 py-1.5">
+          <div className="text-[10px] uppercase tracking-wide text-th-text-muted mb-1">Pre-approved</div>
+          <ul className="text-[11px] text-th-text-muted space-y-0.5">
+            {allowed.map((a, i) => (
+              <li key={i}>
+                <span className="font-mono text-th-accent">{a.tool}</span> — {a.prompt}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Agent dispatch ── */
+function AgentDispatchCard({ block }: { block: ContentBlock }) {
+  const [open, setOpen] = useState(false);
+  const inp = block.input || {};
+  const desc = String(inp.description || "");
+  const subtype = String(inp.subagent_type || "general-purpose");
+  const prompt = String(inp.prompt || "");
+  return (
+    <div className="my-1 rounded-md border border-th-border bg-th-surface/50 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-2 w-full px-2.5 py-1.5 text-left hover:bg-th-surface"
+      >
+        <span className="text-[10px] uppercase tracking-wider text-th-text-muted font-mono">agent</span>
+        <span className="text-xs font-medium text-th-text truncate">{desc || "dispatched subagent"}</span>
+        <span className="ml-auto text-[10px] text-th-text-faint font-mono">{subtype}</span>
+      </button>
+      {open && (
+        <pre className="px-3 py-2 text-[11px] text-th-text-muted whitespace-pre-wrap border-t border-th-border bg-th-bg max-h-64 overflow-y-auto">
+          {prompt}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/* ── AskUserQuestion (historical, non-interactive) ── */
+function AskUserHistoricalCard({ block }: { block: ContentBlock }) {
+  const qs = (block.input?.questions as Array<{
+    question: string;
+    header?: string;
+    options: Array<{ label: string; description?: string }>;
+  }>) || [];
+  if (qs.length === 0) return null;
+  return (
+    <div className="my-2 rounded-lg border border-th-warning-border/50 bg-th-warning-bg/30 p-3">
+      {qs.map((q, i) => (
+        <div key={i} className={i > 0 ? "mt-3 pt-3 border-t border-th-border/50" : ""}>
+          {q.header && (
+            <div className="text-[10px] uppercase tracking-wide text-th-warning-text mb-1">{q.header}</div>
+          )}
+          <p className="text-sm text-th-text mb-2">{q.question}</p>
+          <ul className="space-y-1">
+            {q.options.map((opt, j) => (
+              <li key={j} className="rounded border border-th-border bg-th-bg/60 px-2.5 py-1.5 text-xs">
+                <div className="text-th-text">{opt.label}</div>
+                {opt.description && (
+                  <div className="text-[11px] text-th-text-muted mt-0.5">{opt.description}</div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── Shared detail-on-click row ──
+ * Shows a compact one-line summary. Hover shows a tooltip with the raw JSON,
+ * click/tap reveals the full JSON inline.
+ */
+function DetailLine({
+  children,
+  detail,
+  className = "text-[11px] text-th-text-faint py-px",
+}: {
+  children: React.ReactNode;
+  detail: unknown;
+  className?: string;
+}) {
+  const raw = typeof detail === "string" ? detail : JSON.stringify(detail, null, 2);
+  const tooltip = raw.length > 400 ? raw.substring(0, 400) + "…" : raw;
+  return (
+    <details className={className}>
+      <summary
+        className="cursor-pointer hover:text-th-text-muted list-none marker:hidden"
+        title={tooltip}
+      >
+        {children}
+      </summary>
+      <pre className="mt-1 text-[10px] text-th-text-muted whitespace-pre-wrap bg-th-surface/60 rounded px-2 py-1 max-h-64 overflow-auto">
+        {raw}
+      </pre>
+    </details>
+  );
+}
+
+/* ── Task event ── */
+function TaskEventLine({ block }: { block: ContentBlock }) {
+  const inp = block.input || {};
+  const name = block.name || "";
+  if (name === "TaskCreate") {
+    return (
+      <DetailLine detail={inp}>
+        + <span className="text-th-text-muted">{String(inp.subject || inp.title || "task")}</span>
+      </DetailLine>
+    );
+  }
+  if (name === "TaskUpdate") {
+    const status = String(inp.status || "");
+    const arrow = status === "completed" ? "✓" : status === "in_progress" ? "→" : "·";
+    return (
+      <DetailLine detail={inp}>
+        {arrow} task {status ? <span className="font-mono">{status}</span> : ""}
+        {inp.taskId ? ` #${String(inp.taskId)}` : ""}
+      </DetailLine>
+    );
+  }
+  return (
+    <DetailLine detail={inp}>
+      {name}
+    </DetailLine>
+  );
+}
+
+/* ── MCP tool ── */
+function McpToolLine({ block }: { block: ContentBlock }) {
+  const [open, setOpen] = useState(false);
+  const parts = (block.name || "").split("__"); // mcp__server__tool
+  const server = parts[1] || "mcp";
+  const tool = parts[2] || (block.name || "");
+  const inp = block.input || {};
+  return (
+    <div className="py-px">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="text-xs text-th-text-faint hover:text-th-text-muted"
+      >
+        <span className="font-mono text-th-accent/70">mcp</span>
+        <span className="mx-1 text-th-text-faint">·</span>
+        <span className="font-mono">{server}</span>
+        <span className="mx-1 text-th-text-faint">·</span>
+        <span>{tool}</span>
+      </button>
+      {open && (
+        <pre className="mt-1 text-[10px] text-th-text-faint whitespace-pre-wrap bg-th-surface/60 rounded px-2 py-1">
+          {JSON.stringify(inp, null, 2)}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/* ── Generic tool (known tools fall through here) ── */
 function ToolCall({ block, files, sessionId, onViewFile }: { block: ContentBlock; files: string[]; sessionId: string; onViewFile?: (path: string) => void }) {
   const [open, setOpen] = useState(false);
   const inp = block.input || {};
@@ -207,13 +410,27 @@ function ToolCall({ block, files, sessionId, onViewFile }: { block: ContentBlock
     return <div className="text-xs text-th-text-faint py-px">WebFetch [{url.substring(0, 80)}]</div>;
   }
 
-  // Other tools — name + summary
+  // Known short summaries
   const summary = desc || pattern || query;
+  if (summary) {
+    return (
+      <div className="text-xs text-th-text-faint py-px cursor-pointer hover:text-th-text-muted" onClick={() => setOpen(!open)}>
+        {block.name} [{summary}]
+        {open && <pre className="mt-1 text-[10px] text-th-text-faint whitespace-pre-wrap">{JSON.stringify(inp, null, 2)}</pre>}
+      </div>
+    );
+  }
+
+  // Fallback: honest "gross but acceptable" raw JSON
   return (
-    <div className="text-xs text-th-text-faint py-px cursor-pointer hover:text-th-text-muted" onClick={() => setOpen(!open)}>
-      {block.name}{summary ? ` [${summary}]` : ""}
-      {open && <pre className="mt-1 text-[10px] text-th-text-faint whitespace-pre-wrap">{JSON.stringify(inp, null, 2)}</pre>}
-    </div>
+    <details className="py-px text-xs">
+      <summary className="cursor-pointer text-th-text-faint hover:text-th-text-muted">
+        {block.name || "(unnamed tool)"} <span className="text-[10px] text-th-text-faint opacity-70">(raw)</span>
+      </summary>
+      <pre className="mt-1 text-[10px] text-th-text-muted whitespace-pre-wrap bg-th-surface/60 rounded px-2 py-1 max-h-48 overflow-auto">
+        {JSON.stringify(inp, null, 2)}
+      </pre>
+    </details>
   );
 }
 
@@ -341,14 +558,187 @@ function ImageStrip({ blocks, onViewImages }: { blocks: ContentBlock[]; onViewIm
   );
 }
 
-/* ── AskUserQuestion ── */
-function QuestionBlock({ block }: { block: ContentBlock }) {
-  const questions = (block.input?.questions as Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }> }>) || [];
-  if (questions.length === 0) return null;
+/* ── System event rows ── */
+function SystemEventRow({ entry }: { entry: JsonlEntry }) {
+  const sub = entry.subtype;
+  const r = entry as Record<string, unknown>;
+
+  if (sub === "turn_duration") {
+    const ms = Number(r.durationMs || 0);
+    const count = Number(r.messageCount || 0);
+    return (
+      <DetailLine detail={r} className="text-[11px] text-th-text-faint py-1">
+        {formatDurationMs(ms)}
+        {count > 0 ? ` · ${count} step${count === 1 ? "" : "s"}` : ""}
+      </DetailLine>
+    );
+  }
+  if (sub === "compact_boundary") {
+    const meta = r.compactMetadata as { trigger?: string; preTokens?: number } | undefined;
+    return (
+      <div className="my-3 flex items-center gap-3 text-[11px] text-th-text-muted">
+        <div className="flex-1 h-px bg-th-border" />
+        <span className="uppercase tracking-wider">
+          conversation compacted
+          {meta?.preTokens ? ` · ${Math.round(meta.preTokens / 1000)}K tokens` : ""}
+          {meta?.trigger ? ` · ${meta.trigger}` : ""}
+        </span>
+        <div className="flex-1 h-px bg-th-border" />
+      </div>
+    );
+  }
+  if (sub === "api_error") {
+    const content = String(r.content || r.message || "API error");
+    return (
+      <div className="my-1 rounded-md border border-th-error-text/40 bg-th-error-bg px-3 py-2 text-xs text-th-error-text">
+        <span className="uppercase tracking-wider mr-2 font-semibold">api error</span>
+        {content}
+      </div>
+    );
+  }
+  if (sub === "away_summary" || sub === "informational") {
+    const content = String(r.content || "");
+    if (!content) return null;
+    return (
+      <div className="my-1 rounded border border-th-border bg-th-surface/60 px-3 py-2 text-xs text-th-text-muted">
+        <span className="text-[10px] uppercase tracking-wide text-th-text-faint mr-2">{sub === "away_summary" ? "Away" : "Info"}</span>
+        {content}
+      </div>
+    );
+  }
+  if (sub === "stop_hook_summary") {
+    const hooks = (r.hookInfos as Array<{ command?: string; durationMs?: number }>) || [];
+    const errors = (r.hookErrors as unknown[]) || [];
+    if (hooks.length === 0 && errors.length === 0) return null;
+    return (
+      <DetailLine detail={r}>
+        <span className="uppercase tracking-wider mr-1">hooks</span>
+        {hooks.length}
+        {hooks.length > 0 && ` · ${hooks.map((h) => `${(h.command || "").split("/").pop()} ${h.durationMs}ms`).join(", ")}`}
+        {errors.length > 0 && <span className="text-th-error-text"> · {errors.length} error{errors.length === 1 ? "" : "s"}</span>}
+      </DetailLine>
+    );
+  }
+  if (sub === "local_command") {
+    return null; // rendered via "command" type elsewhere if present
+  }
+  if (sub === "scheduled_task_fire") {
+    return (
+      <DetailLine detail={r} className="text-[11px] text-th-text-faint py-px uppercase tracking-wider">
+        scheduled task fired
+      </DetailLine>
+    );
+  }
+  // Gross but acceptable fallback for unknown system subtypes
   return (
-    <div className="text-xs text-th-text-faint py-px">
-      {questions.map((q, i) => <span key={i}>{i > 0 ? " \u00B7 " : ""}{q.header || q.question.substring(0, 50)}</span>)}
-    </div>
+    <details className="text-[11px] text-th-text-faint py-px">
+      <summary className="cursor-pointer hover:text-th-text-muted">system · {sub || "unknown"}</summary>
+      <pre className="mt-1 text-[10px] text-th-text-muted whitespace-pre-wrap bg-th-surface/60 rounded px-2 py-1 max-h-48 overflow-auto">
+        {JSON.stringify(r, null, 2)}
+      </pre>
+    </details>
+  );
+}
+
+/* ── Top-level event row (non-message entries) ── */
+function EventRow({ entry }: { entry: JsonlEntry }) {
+  const t = entry.type;
+  const r = entry as Record<string, unknown>;
+
+  if (t === "system") return <SystemEventRow entry={entry} />;
+
+  if (t === "pr-link") {
+    const url = String(r.prUrl || "");
+    const num = r.prNumber ? `#${r.prNumber}` : "PR";
+    const repo = r.prRepository ? ` (${r.prRepository})` : "";
+    return (
+      <div className="my-1 rounded-md border border-th-accent/40 bg-th-accent/5 px-3 py-2 text-xs">
+        <span className="uppercase tracking-wider text-th-text-muted mr-2">pr</span>
+        <a href={url} target="_blank" rel="noopener noreferrer" className="text-th-accent hover:underline">{num}{repo}</a>
+      </div>
+    );
+  }
+
+  if (t === "custom-title" || t === "agent-name") {
+    const title = String(r.customTitle || r.agentName || "");
+    if (!title) return null;
+    return (
+      <DetailLine detail={r}>
+        <span className="uppercase tracking-wider mr-1">{t === "custom-title" ? "title" : "agent"}</span>
+        <span className="text-th-text-muted">{title}</span>
+      </DetailLine>
+    );
+  }
+
+  if (t === "worktree-state") {
+    const w = r.worktreeSession as { worktreeName?: string; worktreeBranch?: string } | undefined;
+    if (!w) return null;
+    return (
+      <DetailLine detail={r}>
+        <span className="uppercase tracking-wider mr-1">worktree</span>
+        <span className="font-mono text-th-text-muted">{w.worktreeName}</span>
+        {w.worktreeBranch && <span className="text-th-text-faint"> · {w.worktreeBranch}</span>}
+      </DetailLine>
+    );
+  }
+
+  if (t === "permission-mode") {
+    const mode = String(r.permissionMode || "");
+    return (
+      <DetailLine detail={r}>
+        <span className="uppercase tracking-wider mr-1">permission</span>
+        <span className="font-mono text-th-text-muted">{mode}</span>
+      </DetailLine>
+    );
+  }
+
+  if (t === "queue-operation") {
+    const op = String(r.operation || "");
+    const content = String(r.content || "");
+    return (
+      <DetailLine detail={r}>
+        <span className="uppercase tracking-wider mr-1">queue {op}</span>
+        <span className="text-th-text-muted">{content.substring(0, 100)}</span>
+      </DetailLine>
+    );
+  }
+
+  if (t === "file-history-snapshot") {
+    const snap = r.snapshot as { trackedFileBackups?: unknown[] } | undefined;
+    const n = Array.isArray(snap?.trackedFileBackups) ? snap.trackedFileBackups.length : 0;
+    if (n === 0) return null;
+    return (
+      <DetailLine detail={r}>
+        <span className="uppercase tracking-wider mr-1">snapshot</span>
+        {n} file{n === 1 ? "" : "s"}
+      </DetailLine>
+    );
+  }
+
+  if (t === "progress") {
+    const d = r.data as { hookEvent?: string; hookName?: string; command?: string; type?: string } | undefined;
+    if (!d) return null;
+    const label = d.hookName || d.hookEvent || d.type || "progress";
+    return (
+      <DetailLine detail={r} className="text-[10px] text-th-text-faint py-px opacity-70">
+        <span className="uppercase tracking-wider mr-1">hook</span>
+        {label}{d.command ? ` · ${d.command}` : ""}
+      </DetailLine>
+    );
+  }
+
+  if (t === "last-prompt" || t === "attachment") {
+    return null; // intentionally skipped (redundant with message content)
+  }
+
+  // Gross-but-acceptable fallback
+  return (
+    <details className="py-px text-[11px] text-th-text-faint">
+      <summary className="cursor-pointer hover:text-th-text-muted">event · {t || "unknown"}</summary>
+      <pre className="mt-1 text-[10px] text-th-text-muted whitespace-pre-wrap bg-th-surface/60 rounded px-2 py-1 max-h-48 overflow-auto">
+        {JSON.stringify(r, null, 2)}
+      </pre>
+    </details>
   );
 }
 
@@ -400,11 +790,38 @@ function AssistantEntry({ entry, files, sessionId, onViewFile }: { entry: JsonlE
             </div>
           );
         }
+        if (block.type === "thinking") {
+          return <ThinkingBlock key={j} text={block.thinking || ""} />;
+        }
         if (block.type === "tool_use") {
-          if (block.name === "AskUserQuestion") return <QuestionBlock key={j} block={block} />;
+          const name = block.name || "";
+          if (name === "AskUserQuestion") return <AskUserHistoricalCard key={j} block={block} />;
+          if (name === "ExitPlanMode") return <PlanCard key={j} block={block} />;
+          if (name === "EnterPlanMode") {
+            return (
+              <div key={j} className="my-2 flex items-center gap-2 text-[11px] text-th-accent uppercase tracking-wider">
+                <div className="flex-1 h-px bg-th-accent/30" />
+                <span>entering plan mode</span>
+                <div className="flex-1 h-px bg-th-accent/30" />
+              </div>
+            );
+          }
+          if (name === "Agent") return <AgentDispatchCard key={j} block={block} />;
+          if (name === "TaskCreate" || name === "TaskUpdate" || name === "TaskList" || name === "TaskOutput") {
+            return <TaskEventLine key={j} block={block} />;
+          }
+          if (name.startsWith("mcp__")) return <McpToolLine key={j} block={block} />;
           return <ToolCall key={j} block={block} files={files} sessionId={sessionId} onViewFile={onViewFile} />;
         }
-        return null;
+        // Unknown block type — gross but acceptable
+        return (
+          <details key={j} className="py-px text-[11px] text-th-text-faint">
+            <summary className="cursor-pointer hover:text-th-text-muted">block · {block.type || "unknown"}</summary>
+            <pre className="mt-1 text-[10px] text-th-text-muted whitespace-pre-wrap bg-th-surface/60 rounded px-2 py-1 max-h-48 overflow-auto">
+              {JSON.stringify(block, null, 2)}
+            </pre>
+          </details>
+        );
       })}
     </div>
   );
@@ -491,7 +908,7 @@ function UserEntry({ entry, sessionId, files, onViewFile, onViewImages }: { entr
 }
 
 /* ── Main ── */
-export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingMessage, queuedMessages, isWorking, refreshKey = 0 }: { sessionId: string | null; files: string[]; onViewFile?: (path: string) => void; onViewImages?: (images: string[], startIndex: number) => void; pendingMessage?: string | null; queuedMessages?: string[]; isWorking?: boolean; refreshKey?: number }) {
+export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingMessage, queuedMessages, isWorking, refreshKey = 0, onTasksChange }: { sessionId: string | null; files: string[]; onViewFile?: (path: string) => void; onViewImages?: (images: string[], startIndex: number) => void; pendingMessage?: string | null; queuedMessages?: string[]; isWorking?: boolean; refreshKey?: number; onTasksChange?: (tasks: TranscriptTask[]) => void }) {
   const [entries, setEntries] = useState<JsonlEntry[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLElement | null>(null);
@@ -514,6 +931,10 @@ export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingM
     const id = setInterval(() => void load(), 3000);
     return () => { cancelled = true; clearInterval(id); };
   }, [sessionId, refreshKey]);
+
+  useEffect(() => {
+    if (onTasksChange) onTasksChange(buildTaskList(entries));
+  }, [entries, onTasksChange]);
 
   // Find the scroll container (closest ancestor with overflow scroll/auto)
   useEffect(() => {
@@ -546,8 +967,9 @@ export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingM
     prevCountRef.current = entries.length;
   }, [entries]);
 
-  const conv = entries.filter(e => e.type === "user" || e.type === "assistant" || e.type === "command");
-  if (conv.length === 0) {
+  // Keep everything except purely redundant types; render unknowns honestly below.
+  const conv = entries.filter((e) => e.type !== "last-prompt" && e.type !== "attachment");
+  if (conv.filter((e) => e.type === "user" || e.type === "assistant").length === 0) {
     return <div className="flex h-full items-center justify-center"><p className="text-th-text-faint">Send a message or drop a file to start</p></div>;
   }
 
@@ -557,7 +979,7 @@ export function JsonlChat({ sessionId, files, onViewFile, onViewImages, pendingM
         if (entry.type === "assistant") return <AssistantEntry key={i} entry={entry} files={files} sessionId={sessionId!} onViewFile={onViewFile} />;
         if (entry.type === "user") return <UserEntry key={i} entry={entry} sessionId={sessionId!} files={files} onViewFile={onViewFile} onViewImages={onViewImages} />;
         if (entry.type === "command") return <CommandEntry key={i} entry={entry} />;
-        return null;
+        return <EventRow key={i} entry={entry} />;
       })}
 
       {/* Optimistic: show user message before JSONL has it */}
