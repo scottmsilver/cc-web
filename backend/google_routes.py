@@ -1,14 +1,14 @@
 """
-google_routes — FastAPI router for Google/Gmail/Drive endpoints.
+google_routes — FastAPI router for Gmail/Drive endpoints.
 
-Provides OAuth login flow, Gmail scanning/searching, attachment downloading,
-draft creation, and Google Docs creation. Mounted into server.py via
-app.include_router(router).
+OAuth tokens are managed by the silver-oauth broker (see broker_client.py).
+Each request that touches Gmail/Drive must include an `X-Silver-OAuth-Email`
+header (or `?silver_oauth_email=...` query param) identifying which connected
+Google account to use.
 
 Endpoints:
-  GET    /api/auth/google                                  OAuth redirect
-  GET    /api/auth/google/callback                         OAuth callback
-  GET    /api/auth/google/status                           Connection status
+  GET    /api/auth/silver-oauth/start-url                  URL the browser should redirect to for OAuth
+  GET    /api/auth/silver-oauth/status                     List connected Google accounts
   POST   /api/gmail/scan                                   Scan Gmail for draw emails
   POST   /api/gmail/search                                 Simple Gmail search
   POST   /api/inbox/analyze/{thread_id}                    Atomic analyze (create session + download + run)
@@ -30,9 +30,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
+import broker_client
 import google_service
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from google.oauth2.credentials import Credentials
 from googleapiclient.errors import HttpError
 from pydantic import BaseModel, Field
 
@@ -40,42 +41,42 @@ logger = logging.getLogger("cchost")
 
 router = APIRouter()
 
-# ---------------------------------------------------------------------------
-# Config (no hardcoded URLs)
-# ---------------------------------------------------------------------------
-
-_FRONTEND_URL = os.environ.get("CCHOST_FRONTEND_URL", "http://localhost:3000")
-_API_BASE_URL = os.environ.get("CCHOST_API_URL", "http://localhost:8420")
-_REDIRECT_URI = f"{_API_BASE_URL}/api/auth/google/callback"
+# All scopes cchost needs. Used when generating the OAuth start URL.
+_CCHOST_SCOPES = "gmail.readonly,gmail.compose,drive.file"
 
 
-def _infer_scheme(request) -> str:
-    """Infer the external scheme. Tailscale serve terminates TLS without setting x-forwarded-proto."""
-    if request.headers.get("x-forwarded-proto"):
-        return request.headers["x-forwarded-proto"]
-    host = request.headers.get("host", "")
-    port = host.split(":")[-1] if ":" in host else ""
-    # Tailscale serve uses ports 443, 8443, 10000 for HTTPS
-    if port in ("443", "8443", "10000") or ".ts.net" in host:
-        return "https"
-    return "http"
+def _email_from_request(request: Request) -> str:
+    """
+    Pick which Google account to use for this request, in order of preference:
+      1. X-Silver-OAuth-Email header (frontend explicitly chose one)
+      2. silver_oauth_email query param (legacy / link-style)
+      3. The signed-in user's own email (auto-wire — assumes their cchost
+         identity matches the Google account they want data from)
+    """
+    email = request.headers.get("x-silver-oauth-email", "") or request.query_params.get("silver_oauth_email", "")
+    email = email.strip()
+    if not email:
+        # Fall back to the signed-in user's email.
+        import auth as auth_module
+
+        email = auth_module.current_user(request) or ""
+    if not email:
+        raise HTTPException(
+            status_code=401,
+            detail="no Google account selected (no X-Silver-OAuth-Email header and no signed-in user)",
+        )
+    return email
 
 
-def _dynamic_redirect_uri(request) -> str:
-    """Build redirect URI from the incoming request's Host header."""
-    host = request.headers.get("host", "localhost:8420")
-    scheme = _infer_scheme(request)
-    return f"{scheme}://{host}/api/auth/google/callback"
-
-
-def _dynamic_frontend_url(request) -> str:
-    """Build frontend URL from the incoming request's Host header."""
-    host = request.headers.get("host", "localhost:3000")
-    hostname = host.split(":")[0]
-    scheme = _infer_scheme(request)
-    if scheme == "https":
-        return os.environ.get("CCHOST_FRONTEND_URL", f"https://{hostname}")
-    return os.environ.get("CCHOST_FRONTEND_URL", f"{scheme}://{hostname}:3000")
+def _creds_for(request: Request, scope: str) -> Credentials:
+    """Fetch fresh broker-issued credentials for the email named by the request."""
+    email = _email_from_request(request)
+    try:
+        return broker_client.credentials_for(email, scope)
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"broker not configured: {exc}")
 
 
 _CCHOST_DIR = os.path.join(Path.home(), ".cchost")
@@ -101,18 +102,6 @@ def _save_downloaded_threads(data: dict) -> None:
     os.makedirs(_CCHOST_DIR, exist_ok=True)
     with open(_DOWNLOADED_THREADS_PATH, "w") as f:
         json.dump(data, f, indent=2)
-
-
-def _get_authenticated_credentials() -> google_service.Credentials:
-    """Load and refresh Google credentials, or raise 401."""
-    tm = google_service.TokenManager()
-    creds = tm.load()
-    if creds is None:
-        raise HTTPException(status_code=401, detail="Gmail not connected")
-    creds = tm.refresh_if_needed(creds)
-    if creds is None:
-        raise HTTPException(status_code=401, detail="Gmail token expired or revoked")
-    return creds
 
 
 def _gmail_api_call(func):
@@ -178,6 +167,26 @@ class DownloadResponse(BaseModel):
 class DraftResponse(BaseModel):
     draft_id: str
     message: str = "Draft created"
+    draft_url: str = ""
+
+
+class DraftFromFileRequest(BaseModel):
+    session_id: str
+    path: str  # session-relative path to a .email.md file
+
+
+class ParsedEmailMd(BaseModel):
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] = Field(default_factory=list)
+    bcc: list[str] = Field(default_factory=list)
+    subject: str = ""
+    reply_to: str = ""  # gmail threadId
+    in_reply_to: str = ""  # RFC Message-ID
+    from_: str = Field(default="", alias="from")
+    attachments: list[str] = Field(default_factory=list)
+    body_md: str = ""
+
+    model_config = {"populate_by_name": True}
 
 
 class DocResponse(BaseModel):
@@ -225,75 +234,37 @@ def _extract_attachment_parts(payload: dict) -> list[dict]:
 # ===========================================================================
 
 
-@router.get("/api/auth/google")
-def google_oauth_start(request: Request):
-    """Generate OAuth URL and redirect browser to Google consent screen."""
+@router.get("/api/auth/silver-oauth/start-url")
+def silver_oauth_start_url(return_url: str):
+    """
+    Build the URL the browser should redirect to in order to begin OAuth via
+    the silver-oauth broker. The frontend stays agnostic of the broker URL.
+    """
+    if not return_url:
+        raise HTTPException(status_code=400, detail="return_url required")
     try:
-        redirect_uri = _dynamic_redirect_uri(request)
-        flow = google_service.get_oauth_flow(redirect_uri)
-        auth_url, _ = flow.authorization_url(
-            access_type="offline",
-            include_granted_scopes="true",
-            prompt="consent",
-        )
-        return RedirectResponse(url=auth_url)
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=500,
-            detail="client_secret.json not found at ~/.cchost/client_secret.json",
-        )
+        return {"url": broker_client.start_url(return_url, _CCHOST_SCOPES)}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"broker not configured: {exc}")
+
+
+@router.get("/api/auth/silver-oauth/status")
+def silver_oauth_status():
+    """List Google accounts the broker has tokens for."""
+    if not broker_client.is_configured():
+        return {"configured": False, "accounts": []}
+    try:
+        accounts = broker_client.list_accounts()
+        return {"configured": True, "accounts": accounts}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"OAuth flow error: {exc}")
-
-
-@router.get("/api/auth/google/callback")
-def google_oauth_callback(request: Request, code: Optional[str] = None, error: Optional[str] = None):
-    """Exchange auth code for tokens, save, redirect to frontend."""
-    frontend_url = _dynamic_frontend_url(request)
-    if error:
-        return RedirectResponse(url=f"{frontend_url}?gmail_error={error}")
-
-    if not code:
-        return RedirectResponse(url=f"{frontend_url}?gmail_error=no_code")
-
-    try:
-        redirect_uri = _dynamic_redirect_uri(request)
-        flow = google_service.get_oauth_flow(redirect_uri)
-        credentials = google_service.exchange_code(flow, code)
-        tm = google_service.TokenManager()
-        tm.save(credentials)
-        return RedirectResponse(url=f"{frontend_url}?gmail_connected=true")
-    except Exception as exc:
-        logger.exception("OAuth callback error")
-        return RedirectResponse(url=f"{frontend_url}?gmail_error={str(exc)[:200]}")
-
-
-@router.get("/api/auth/google/status")
-def google_auth_status():
-    """Check if Gmail is connected and return email address."""
-    tm = google_service.TokenManager()
-    creds = tm.load()
-    if creds is None:
-        return {"connected": False}
-
-    creds = tm.refresh_if_needed(creds)
-    if creds is None:
-        return {"connected": False}
-
-    try:
-        gmail = google_service.build_gmail_service(creds)
-        profile = gmail.users().getProfile(userId="me").execute()
-        return {"connected": True, "email": profile.get("emailAddress", "")}
-    except HttpError:
-        return {"connected": False}
-    except Exception:
-        return {"connected": False}
+        logger.warning("broker /accounts call failed: %s", exc)
+        return {"configured": True, "accounts": [], "error": str(exc)}
 
 
 @router.post("/api/gmail/scan", response_model=list[ThreadSummary])
-def gmail_scan(req: GmailScanRequest):
+def gmail_scan(request: Request, req: GmailScanRequest):
     """Search Gmail for draw-related emails and return thread summaries."""
-    creds = _get_authenticated_credentials()
+    creds = _creds_for(request, "gmail.readonly")
     gmail = google_service.build_gmail_service(creds)
 
     # Search for messages matching query
@@ -379,7 +350,7 @@ def _strip_gmail_operators(query: str) -> str:
 
 
 @router.post("/api/gmail/semantic-search", response_model=list[ThreadSummary])
-def gmail_semantic_search(req: SemanticSearchRequest):
+def gmail_semantic_search(request: Request, req: SemanticSearchRequest):
     """Semantic search via gmail-search engine. Falls back to Gmail API scan on failure."""
     import requests as _requests
 
@@ -388,7 +359,7 @@ def gmail_semantic_search(req: SemanticSearchRequest):
     if not clean_query:
         # Query was entirely operators (e.g., "has:attachment newer_than:90d")
         # Fall back to Gmail API which understands these
-        return gmail_scan(GmailScanRequest(query=req.query))
+        return gmail_scan(request, GmailScanRequest(query=req.query))
 
     downloaded = _load_downloaded_threads()
     try:
@@ -402,7 +373,7 @@ def gmail_semantic_search(req: SemanticSearchRequest):
     except Exception as e:
         logger.warning("gmail-search unavailable (%s), falling back to scan", e)
         # Fall back to Gmail API scan
-        return gmail_scan(GmailScanRequest(query=req.query))
+        return gmail_scan(request, GmailScanRequest(query=req.query))
 
     results = []
     for r in data.get("results", []):
@@ -432,9 +403,9 @@ def gmail_semantic_search(req: SemanticSearchRequest):
 
 
 @router.post("/api/gmail/search", response_model=list[SearchThreadSummary])
-def gmail_search(req: GmailSearchRequest):
+def gmail_search(request: Request, req: GmailSearchRequest):
     """Simple Gmail search for mid-run skill queries."""
-    creds = _get_authenticated_credentials()
+    creds = _creds_for(request, "gmail.readonly")
     gmail = google_service.build_gmail_service(creds)
 
     results = _gmail_api_call(lambda: gmail.users().messages().list(userId="me", q=req.query, maxResults=20).execute())
@@ -486,9 +457,9 @@ class ThreadPreview(BaseModel):
 
 
 @router.get("/api/gmail/thread/{thread_id}/preview", response_model=ThreadPreview)
-def gmail_thread_preview(thread_id: str):
+def gmail_thread_preview(request: Request, thread_id: str):
     """Fetch a compact preview of one Gmail thread (body text + headers)."""
-    creds = _get_authenticated_credentials()
+    creds = _creds_for(request, "gmail.readonly")
     gmail = google_service.build_gmail_service(creds)
 
     thread = _gmail_api_call(lambda: gmail.users().threads().get(userId="me", id=thread_id, format="full").execute())
@@ -524,12 +495,12 @@ def gmail_thread_preview(thread_id: str):
 
 
 @router.post("/api/inbox/analyze/{thread_id}", response_model=AnalyzeResponse)
-def analyze_thread(thread_id: str):
+def analyze_thread(request: Request, thread_id: str):
     """Atomic create-session + download attachments + start analyzer run."""
     # Import host and run_manager from server (avoids circular at module level)
     from server import host, run_manager
 
-    creds = _get_authenticated_credentials()
+    creds = _creds_for(request, "gmail.readonly")
 
     # 1. Create a new session
     session_id = f"inbox-{uuid.uuid4().hex[:8]}"
@@ -574,7 +545,7 @@ def analyze_thread(thread_id: str):
     "/api/sessions/{session_id}/gmail/download/{thread_id}",
     response_model=DownloadResponse,
 )
-def download_thread_attachments(session_id: str, thread_id: str):
+def download_thread_attachments(request: Request, session_id: str, thread_id: str):
     """Download all attachments from a Gmail thread into the session working dir."""
     from server import host
 
@@ -583,7 +554,7 @@ def download_thread_attachments(session_id: str, thread_id: str):
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    creds = _get_authenticated_credentials()
+    creds = _creds_for(request, "gmail.readonly")
 
     inbox_dir = os.path.join(session.working_dir, "inbox", thread_id)
     os.makedirs(inbox_dir, exist_ok=True)
@@ -635,7 +606,7 @@ def download_thread_attachments(session_id: str, thread_id: str):
 
 
 @router.post("/api/sessions/{session_id}/gmail/draft", response_model=DraftResponse)
-def create_gmail_draft(session_id: str, req: GmailDraftRequest):
+def create_gmail_draft(request: Request, session_id: str, req: GmailDraftRequest):
     """Create a Gmail draft reply from the session's generated email file."""
     from server import host
 
@@ -644,7 +615,7 @@ def create_gmail_draft(session_id: str, req: GmailDraftRequest):
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    creds = _get_authenticated_credentials()
+    creds = _creds_for(request, "gmail.compose")
 
     # Find the email file in the session working dir
     email_text = _find_email_file(session.working_dir)
@@ -720,8 +691,257 @@ def create_gmail_draft(session_id: str, req: GmailDraftRequest):
     return DraftResponse(draft_id=draft["id"])
 
 
+# ---------------------------------------------------------------------------
+# .email.md parsing + draft-from-file
+# ---------------------------------------------------------------------------
+
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
+def _to_list(v) -> list[str]:
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [v.strip()] if v.strip() else []
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    return []
+
+
+def _parse_inline_list(v: str) -> list[str]:
+    """Parse `[a, b, c]` → ['a','b','c']. Returns [] if not a bracketed list."""
+    v = v.strip()
+    if not (v.startswith("[") and v.endswith("]")):
+        return []
+    inner = v[1:-1].strip()
+    if not inner:
+        return []
+    return [part.strip().strip('"').strip("'") for part in inner.split(",") if part.strip()]
+
+
+def _parse_frontmatter(text: str) -> dict:
+    """Lightweight frontmatter parser.
+    Supports:
+      key: value                     (string — everything after the first colon)
+      key: [a, b, c]                 (inline list)
+      key:                           (followed by block list items)
+        - item
+    Multi-colon values like `subject: Re: foo` are preserved as strings.
+    Outer single/double quotes are stripped.
+    """
+    out: dict = {}
+    current_list_key: str | None = None
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        stripped = line.lstrip()
+        if current_list_key and stripped.startswith("- "):
+            item = stripped[2:].strip().strip('"').strip("'")
+            out.setdefault(current_list_key, []).append(item)
+            continue
+        if ":" not in line:
+            raise ValueError(f"Unrecognized frontmatter line: {line!r}")
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            raise ValueError(f"Empty key in line: {line!r}")
+        if not value:
+            current_list_key = key
+            out[key] = []
+            continue
+        current_list_key = None
+        if value.startswith("["):
+            out[key] = _parse_inline_list(value)
+        else:
+            if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+            out[key] = value
+    return out
+
+
+def parse_email_md(text: str) -> ParsedEmailMd:
+    """Parse a .email.md file: frontmatter + markdown body."""
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        raise ValueError("Missing frontmatter block (expected leading ---...---)")
+    try:
+        meta = _parse_frontmatter(m.group(1))
+    except ValueError as e:
+        raise ValueError(f"Invalid frontmatter: {e}")
+    body = text[m.end() :]
+    return ParsedEmailMd(
+        to=_to_list(meta.get("to")),
+        cc=_to_list(meta.get("cc")),
+        bcc=_to_list(meta.get("bcc")),
+        subject=str(meta.get("subject") or ""),
+        reply_to=str(meta.get("reply_to") or ""),
+        in_reply_to=str(meta.get("in_reply_to") or ""),
+        **{"from": str(meta.get("from") or "")},
+        attachments=_to_list(meta.get("attachments")),
+        body_md=body.lstrip("\n"),
+    )
+
+
+def _md_to_html(md_text: str) -> str:
+    import markdown as _md
+
+    return _md.markdown(md_text, extensions=["extra", "sane_lists", "nl2br"])
+
+
+def _safe_session_path(session_working_dir: str, rel: str) -> str:
+    """Resolve rel inside session working dir, reject traversal."""
+    base = os.path.realpath(session_working_dir)
+    rel = rel.lstrip("/")
+    candidate = os.path.realpath(os.path.join(base, rel))
+    if not (candidate == base or candidate.startswith(base + os.sep)):
+        raise HTTPException(status_code=400, detail="Path escapes session")
+    return candidate
+
+
+def _build_draft_mime(parsed: ParsedEmailMd, session_dir: str, file_dir: str, thread_headers: dict | None):
+    """Build a MIMEMultipart draft. thread_headers carries In-Reply-To/References/subject/to if replying."""
+    import mimetypes as _mimetypes
+    from email import encoders as _encoders
+    from email.mime.base import MIMEBase
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText as _MIMEText
+
+    subject = parsed.subject or (thread_headers or {}).get("subject", "")
+    to_list = parsed.to or ([thread_headers["to"]] if thread_headers and thread_headers.get("to") else [])
+    if not to_list:
+        raise HTTPException(status_code=400, detail="No recipient — set `to:` in frontmatter")
+    if not subject:
+        raise HTTPException(status_code=400, detail="No subject — set `subject:` in frontmatter")
+
+    body_md = parsed.body_md
+    body_html = _md_to_html(body_md)
+
+    alt = MIMEMultipart("alternative")
+    alt.attach(_MIMEText(body_md, "plain", "utf-8"))
+    alt.attach(_MIMEText(body_html, "html", "utf-8"))
+
+    # Resolve attachments relative to the .email.md file
+    attach_paths: list[str] = []
+    for a in parsed.attachments:
+        resolved = _safe_session_path(session_dir, os.path.join(os.path.relpath(file_dir, session_dir), a))
+        if not os.path.isfile(resolved):
+            raise HTTPException(status_code=400, detail=f"Attachment not found: {a}")
+        attach_paths.append(resolved)
+
+    if attach_paths:
+        outer = MIMEMultipart("mixed")
+        outer.attach(alt)
+        for path in attach_paths:
+            ctype, _ = _mimetypes.guess_type(path)
+            maintype, subtype = (ctype or "application/octet-stream").split("/", 1)
+            with open(path, "rb") as f:
+                data = f.read()
+            part = MIMEBase(maintype, subtype)
+            part.set_payload(data)
+            _encoders.encode_base64(part)
+            part.add_header("Content-Disposition", "attachment", filename=os.path.basename(path))
+            outer.attach(part)
+        msg = outer
+    else:
+        msg = alt
+
+    msg["To"] = ", ".join(to_list)
+    if parsed.cc:
+        msg["Cc"] = ", ".join(parsed.cc)
+    if parsed.bcc:
+        msg["Bcc"] = ", ".join(parsed.bcc)
+    msg["Subject"] = subject
+    if parsed.from_:
+        msg["From"] = parsed.from_
+    if thread_headers and thread_headers.get("message_id"):
+        mid = thread_headers["message_id"]
+        msg["In-Reply-To"] = mid
+        msg["References"] = mid
+    elif parsed.in_reply_to:
+        msg["In-Reply-To"] = parsed.in_reply_to
+        msg["References"] = parsed.in_reply_to
+    return msg
+
+
+@router.post("/api/gmail/draft-from-file", response_model=DraftResponse)
+def create_draft_from_file(request: Request, req: DraftFromFileRequest):
+    """Create a Gmail draft from a .email.md file in a session."""
+    from server import host
+
+    try:
+        session = host.get(req.session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if not req.path.endswith(".email.md"):
+        raise HTTPException(status_code=400, detail="Path must end in .email.md")
+
+    abs_path = _safe_session_path(session.working_dir, req.path)
+    if not os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {req.path}")
+
+    try:
+        with open(abs_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not read file: {e}")
+
+    try:
+        parsed = parse_email_md(text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    creds = _creds_for(request, "gmail.compose")
+    gmail = google_service.build_gmail_service(creds)
+
+    thread_headers: dict | None = None
+    thread_id: str | None = None
+
+    if parsed.reply_to:
+        thread_id = parsed.reply_to
+        thread = _gmail_api_call(
+            lambda: gmail.users()
+            .threads()
+            .get(userId="me", id=thread_id, format="metadata", metadataHeaders=["Subject", "From", "To", "Message-ID"])
+            .execute()
+        )
+        msgs = thread.get("messages", [])
+        if msgs:
+            headers = msgs[-1].get("payload", {}).get("headers", [])
+            orig_subject = _get_header(headers, "Subject")
+            if orig_subject and not orig_subject.lower().startswith("re:"):
+                orig_subject = f"Re: {orig_subject}"
+            thread_headers = {
+                "subject": orig_subject,
+                "to": _get_header(headers, "From"),
+                "message_id": _get_header(headers, "Message-ID"),
+            }
+
+    mime_msg = _build_draft_mime(parsed, session.working_dir, os.path.dirname(abs_path), thread_headers)
+    raw = base64.urlsafe_b64encode(mime_msg.as_bytes()).decode("utf-8")
+
+    body = {"message": {"raw": raw}}
+    if thread_id:
+        body["message"]["threadId"] = thread_id
+
+    draft = _gmail_api_call(lambda: gmail.users().drafts().create(userId="me", body=body).execute())
+
+    draft_url = (
+        f"https://mail.google.com/mail/u/0/#inbox/{thread_id}"
+        if thread_id
+        else "https://mail.google.com/mail/u/0/#drafts"
+    )
+    return DraftResponse(
+        draft_id=draft["id"],
+        message="Draft created",
+        draft_url=draft_url,
+    )
+
+
 @router.post("/api/sessions/{session_id}/drive/doc", response_model=DocResponse)
-def create_google_doc(session_id: str):
+def create_google_doc(request: Request, session_id: str):
     """Create a Google Doc from the session's audit files."""
     from server import host
 
@@ -730,7 +950,7 @@ def create_google_doc(session_id: str):
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    creds = _get_authenticated_credentials()
+    creds = _creds_for(request, "drive.file")
 
     # Collect audit content from session files
     content_parts = []
@@ -865,7 +1085,7 @@ def _extract_inline_images(payload: dict) -> list[dict]:
 
 
 def _download_thread_attachments(
-    creds: google_service.Credentials,
+    creds: Credentials,
     thread_id: str,
     dest_dir: str,
 ) -> list[str]:

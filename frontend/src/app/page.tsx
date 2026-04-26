@@ -25,6 +25,8 @@ import { TabBar, type TabId } from "@/components/tab-bar";
 import { isBinaryFile, getFileName, groupByDirectory, CCHOST_API } from "@/lib/config";
 import {
   fetchGmailStatus,
+  captureSilverOAuthEmailFromUrl,
+  getSilverOAuthEmail,
   fetchSessions as apiFetchSessions,
   createSession as apiCreateSession,
   deleteSession as apiDeleteSession,
@@ -424,6 +426,11 @@ export default function Chat() {
       const qs = params.toString();
       window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
     }
+    // Capture broker handoff (silver_oauth=<jwt>) and open the Gmail picker so the
+    // user lands somewhere sensible after granting access.
+    void captureSilverOAuthEmailFromUrl().then((email) => {
+      if (email) setShowGmailPicker(true);
+    });
     urlInitializedRef.current = true;
   }, []);
 
@@ -852,6 +859,14 @@ export default function Chat() {
       setFiles([]);
       setProgress(null);
       setActiveRunId(null);
+      // Reset transient flags from any previous session, otherwise the
+      // first message in the new topic gets routed through the queue path
+      // (which sends raw input to tmux without creating a Run record) and
+      // appears to vanish — the topic exists but the chat never "attaches".
+      setIsLoading(false);
+      setIsAnswering(false);
+      setGmailDownloads([]);
+      setGmailThreadIds([]);
       setActiveTab("chat");
     } catch (error) {
       console.warn("Failed to create topic:", error);
@@ -932,11 +947,14 @@ export default function Chat() {
     setGmailThreadIds(selectedThreads.map((t) => t.id));
 
     // Download each thread's attachments async
+    const oauthEmail = getSilverOAuthEmail();
     for (const thread of selectedThreads) {
       try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (oauthEmail) headers["X-Silver-OAuth-Email"] = oauthEmail;
         const res = await fetch(
           `${CCHOST_API}/api/sessions/${sid}/gmail/download/${thread.id}`,
-          { method: "POST", headers: { "Content-Type": "application/json" } },
+          { method: "POST", headers },
         );
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { files: string[] };

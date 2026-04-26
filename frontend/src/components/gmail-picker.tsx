@@ -113,13 +113,13 @@ export function GmailPicker({
     return () => clearInterval(interval);
   }, [pollingAuth, onGmailConnected]);
 
-  const handleConnectGmail = () => {
-    const popup = window.open(getGmailAuthUrl(), "gmail-auth", "width=600,height=700");
-    if (!popup || popup.closed) {
-      setError("Popup was blocked. Please allow popups for this site and try again.");
-      return;
+  const handleConnectGmail = async () => {
+    try {
+      const url = await getGmailAuthUrl();
+      window.location.href = url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start OAuth");
     }
-    setPollingAuth(true);
   };
 
   const handleScan = async (query?: string) => {

@@ -112,7 +112,11 @@ export function InboxTab({ onAnalyzeComplete }: InboxTabProps) {
           Connect your Gmail to scan for invoices and construction documents.
         </p>
         <button
-          onClick={() => { window.location.href = getGmailAuthUrl(); }}
+          onClick={() => {
+            void getGmailAuthUrl().then((url) => {
+              window.location.href = url;
+            });
+          }}
           className="rounded-lg bg-th-accent px-6 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
         >
           Connect Gmail

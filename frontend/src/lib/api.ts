@@ -306,22 +306,103 @@ export async function runSlashCommand(
   return res.json();
 }
 
-// ── Gmail / Inbox ──
+// ── Silver-OAuth broker integration ──
 
-export async function fetchGmailStatus(): Promise<{ connected: boolean; email?: string }> {
-  const res = await fetch(`${CCHOST_API}/api/auth/google/status`);
-  if (!res.ok) return { connected: false };
-  return res.json();
+const OAUTH_EMAIL_KEY = "silverOAuthEmail";
+
+export function getSilverOAuthEmail(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(OAUTH_EMAIL_KEY) || "";
 }
 
-export function getGmailAuthUrl(): string {
-  return `${CCHOST_API}/api/auth/google`;
+export function setSilverOAuthEmail(email: string): void {
+  if (typeof window !== "undefined") window.localStorage.setItem(OAUTH_EMAIL_KEY, email);
+}
+
+export function clearSilverOAuthEmail(): void {
+  if (typeof window !== "undefined") window.localStorage.removeItem(OAUTH_EMAIL_KEY);
+}
+
+/**
+ * If the URL contains ?silver_oauth=<jwt> (broker handoff), POST it to the
+ * backend to verify, stash the resulting email in localStorage, and strip the
+ * param from the URL. Returns the email if captured, else null. Call once on
+ * app startup (after the auth gate has confirmed the user is signed in).
+ */
+export async function captureSilverOAuthEmailFromUrl(): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("silver_oauth");
+  if (!token) return null;
+  // Strip immediately so we don't re-process on rerender.
+  params.delete("silver_oauth");
+  const qs = params.toString();
+  const newUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
+  window.history.replaceState({}, "", newUrl);
+  try {
+    const res = await fetch(`${CCHOST_API}/api/auth/verify-handoff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ token }),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { email: string };
+    setSilverOAuthEmail(data.email);
+    return data.email;
+  } catch {
+    return null;
+  }
+}
+
+function silverOAuthHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const email = getSilverOAuthEmail();
+  return email ? { ...extra, "X-Silver-OAuth-Email": email } : extra;
+}
+
+// ── Gmail / Inbox ──
+
+export type SilverOAuthAccount = { email: string; scopes: string[]; updated_at?: number };
+
+export async function fetchGmailStatus(): Promise<{
+  connected: boolean;
+  email?: string;
+  accounts?: SilverOAuthAccount[];
+}> {
+  const res = await fetch(`${CCHOST_API}/api/auth/silver-oauth/status`);
+  if (!res.ok) return { connected: false };
+  const data = await res.json();
+  if (!data.configured) return { connected: false };
+  const accounts: SilverOAuthAccount[] = data.accounts ?? [];
+  const stored = getSilverOAuthEmail();
+  if (stored && accounts.some((a) => a.email === stored)) {
+    return { connected: true, email: stored, accounts };
+  }
+  // Auto-pick the first account if nothing stored yet (single-user default).
+  if (!stored && accounts.length > 0) {
+    setSilverOAuthEmail(accounts[0].email);
+    return { connected: true, email: accounts[0].email, accounts };
+  }
+  return { connected: false, accounts };
+}
+
+/** Returns the URL the browser should be sent to, to start an OAuth flow via the broker. */
+export async function getGmailAuthUrl(returnUrl?: string): Promise<string> {
+  const ru =
+    returnUrl ??
+    (typeof window !== "undefined" ? window.location.origin + window.location.pathname : "");
+  const res = await fetch(
+    `${CCHOST_API}/api/auth/silver-oauth/start-url?return_url=${encodeURIComponent(ru)}`,
+  );
+  if (!res.ok) throw new Error(`Failed to get auth URL: HTTP ${res.status}`);
+  const data = await res.json();
+  return data.url as string;
 }
 
 export async function scanGmail(query?: string): Promise<GmailThread[]> {
   const res = await fetch(`${CCHOST_API}/api/gmail/scan`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: silverOAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ query: query || "has:attachment newer_than:90d" }),
   });
   if (!res.ok) throw new Error(`Scan failed: HTTP ${res.status}`);
@@ -331,7 +412,7 @@ export async function scanGmail(query?: string): Promise<GmailThread[]> {
 export async function searchGmailSemantic(query: string, k = 20): Promise<GmailThread[]> {
   const res = await fetch(`${CCHOST_API}/api/gmail/semantic-search`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: silverOAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ query, k }),
   });
   if (!res.ok) throw new Error(`Search failed: HTTP ${res.status}`);
@@ -353,14 +434,41 @@ export type GmailThreadPreview = {
 };
 
 export async function fetchGmailThreadPreview(threadId: string): Promise<GmailThreadPreview> {
-  const res = await fetch(`${CCHOST_API}/api/gmail/thread/${encodeURIComponent(threadId)}/preview`);
+  const res = await fetch(
+    `${CCHOST_API}/api/gmail/thread/${encodeURIComponent(threadId)}/preview`,
+    { headers: silverOAuthHeaders() },
+  );
   if (!res.ok) throw new Error(`Preview failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+export type DraftFromFileResponse = {
+  draft_id: string;
+  message: string;
+  draft_url: string;
+};
+
+export async function createDraftFromFile(sessionId: string, path: string): Promise<DraftFromFileResponse> {
+  const res = await fetch(`${CCHOST_API}/api/gmail/draft-from-file`, {
+    method: "POST",
+    headers: silverOAuthHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ session_id: sessionId, path }),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j?.detail) detail = String(j.detail);
+    } catch { /* ignore */ }
+    throw new Error(detail);
+  }
   return res.json();
 }
 
 export async function analyzeThread(threadId: string): Promise<{ session_id: string; run_id: string }> {
   const res = await fetch(`${CCHOST_API}/api/inbox/analyze/${threadId}`, {
     method: "POST",
+    headers: silverOAuthHeaders(),
   });
   if (!res.ok) throw new Error(`Analyze failed: HTTP ${res.status}`);
   return res.json();
@@ -369,7 +477,7 @@ export async function analyzeThread(threadId: string): Promise<{ session_id: str
 export async function createGmailDraft(sessionId: string, threadId: string): Promise<{ draft_id: string }> {
   const res = await fetch(`${CCHOST_API}/api/sessions/${sessionId}/gmail/draft`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: silverOAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ thread_id: threadId }),
   });
   if (!res.ok) throw new Error(`Draft failed: HTTP ${res.status}`);

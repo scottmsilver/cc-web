@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
+import { AuthGate } from "@/components/auth-gate";
+
 const inter = Inter({
   variable: "--font-sans",
   subsets: ["latin"],
@@ -27,7 +29,9 @@ export default function RootLayout({
       lang="en"
       className={`${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col font-[family-name:var(--font-sans)]">{children}</body>
+      <body className="min-h-full flex flex-col font-[family-name:var(--font-sans)]">
+        <AuthGate>{children}</AuthGate>
+      </body>
     </html>
   );
 }

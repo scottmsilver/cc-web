@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { createGmailDraft, readFile } from "@/lib/api";
+import { createGmailDraft, readFile, getSilverOAuthEmail } from "@/lib/api";
 import { CCHOST_API } from "@/lib/config";
 
 type DraftExportButtonsProps = {
@@ -79,9 +79,12 @@ export function DraftExportButtons({
     setDocStatus("loading");
     setDocError("");
     try {
+      const oauthEmail = getSilverOAuthEmail();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (oauthEmail) headers["X-Silver-OAuth-Email"] = oauthEmail;
       const res = await fetch(
         `${CCHOST_API}/api/sessions/${sessionId}/drive/doc`,
-        { method: "POST", headers: { "Content-Type": "application/json" } },
+        { method: "POST", headers },
       );
       if (!res.ok) {
         const detail = await res.text();

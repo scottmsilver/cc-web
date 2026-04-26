@@ -17,12 +17,21 @@ Gradio UI at /ui — conversational chat interface with file browser.
 
 import logging
 import os
+import sys
 import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Optional
+
+# When run as `python3 server.py`, this module is loaded as `__main__`.
+# Submodules (e.g. google_routes) later do `from server import host`, which
+# would otherwise re-execute server.py as a NEW module named `server`,
+# producing a second `CCHost` instance whose `_sessions` dict diverges from
+# the live one used by the route handlers defined here. Aliasing __main__ as
+# `server` in sys.modules guarantees a single shared instance.
+sys.modules.setdefault("server", sys.modules[__name__])
 
 logger = logging.getLogger("cchost")
 
@@ -47,7 +56,10 @@ topic_manager = TopicManager(host)
 # REST API
 # ============================================================
 
+import auth as auth_module
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
 
 app = FastAPI(title="cchost", description="Claude Code as a hosted service")
 
@@ -59,14 +71,49 @@ _cors_origins = os.environ.get(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=False,
+    # Cookies must be allowed across origins so the frontend (potentially served from a
+    # different host than the API) can carry the session. Note: with `allow_credentials=True`
+    # CORSMiddleware refuses to use the wildcard `*` for Access-Control-Allow-Origin.
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Reject anything that isn't a session-cookie-authenticated request, except for a small allowlist."""
+
+    async def dispatch(self, request: StarletteRequest, call_next):
+        path = request.url.path
+        if (
+            path in auth_module.PUBLIC_PATHS
+            or path.startswith("/api/auth/")
+            or path.startswith("/static/")
+            or path.startswith("/favicon")
+            or request.method == "OPTIONS"
+        ):
+            return await call_next(request)
+        if not auth_module.is_configured():
+            # Fail closed if the operator forgot to set the env vars.
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(
+                {"detail": "cchost auth is not configured on the server"},
+                status_code=500,
+            )
+        if not auth_module.current_user(request):
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse({"detail": "not signed in"}, status_code=401)
+        return await call_next(request)
+
+
+app.add_middleware(AuthMiddleware)
+
 from google_routes import router as google_router
 
 app.include_router(google_router)
+app.include_router(auth_module.router)
 
 
 class CreateSessionRequest(BaseModel):
@@ -793,15 +840,16 @@ def eml_html(session_id: str, path: str):
 
     external_urls = set(_re.findall(r'src="(https?://[^"]+)"', html_body))
     if external_urls:
-        # Try to use Google OAuth token for googleusercontent.com URLs
+        # Try to use a Google access token (via the silver-oauth broker) for
+        # googleusercontent.com URLs that require auth.
         headers = {}
         try:
-            tm = google_service.TokenManager()
-            creds = tm.load()
-            if creds:
-                creds = tm.refresh_if_needed(creds)
-                if creds and hasattr(creds, "token"):
-                    headers["Authorization"] = f"Bearer {creds.token}"
+            import broker_client
+
+            email = os.environ.get("SILVER_OAUTH_DEFAULT_EMAIL", "")
+            if email and broker_client.is_configured():
+                creds = broker_client.credentials_for(email, "gmail.readonly")
+                headers["Authorization"] = f"Bearer {creds.token}"
         except Exception:
             pass
 
@@ -1064,7 +1112,23 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 @app.websocket("/api/sessions/{session_id}/terminal/ws")
 async def terminal_ws(websocket: WebSocket, session_id: str):
-    """Stream tmux pane output over WebSocket. Sends full scrollback on connect, then diffs."""
+    """Bidirectional terminal WebSocket.
+
+    Server → client: streams full pane content on connect, then again whenever
+    it changes (poll every 500ms). Client redraws on each message.
+
+    Client → server: any text frame is sent to the tmux pane literally
+    (xterm.js-encoded keystrokes including ANSI sequences and control bytes).
+    Lets users drive interactive overlays — slash-command picker, plan-mode
+    confirmations, AskUserQuestion — that the chat input can't reach.
+    """
+    # WebSockets bypass the HTTP auth middleware; check the session cookie here.
+    cookie = websocket.cookies.get(auth_module.SESSION_COOKIE)
+    email = auth_module.verify_session_cookie(cookie) if cookie else None
+    if not email or email.lower() not in auth_module._allowed_emails():
+        await websocket.close(code=4401, reason="not signed in")
+        return
+
     try:
         session = host.get(session_id)
     except KeyError:
@@ -1074,30 +1138,51 @@ async def terminal_ws(websocket: WebSocket, session_id: str):
     await websocket.accept()
     import asyncio
 
-    prev_content = ""
-    try:
-        # Send full scrollback on connect
-        content = session.terminal_capture(0)
-        await websocket.send_text(content)
-        prev_content = content
-
-        # Stream updates
-        while True:
-            await asyncio.sleep(0.5)
-            try:
-                content = session.terminal_capture(0)
-                if content != prev_content:
-                    await websocket.send_text(content)
-                    prev_content = content
-            except Exception:
-                break
-    except WebSocketDisconnect:
-        pass
-    except Exception:
+    async def reader():
+        """Forward client keystrokes to tmux."""
         try:
-            await websocket.close()
-        except Exception:
+            while True:
+                data = await websocket.receive_text()
+                if data:
+                    try:
+                        session.send_raw_input(data)
+                    except Exception as e:
+                        logger.warning("send_raw_input failed for %s: %s", session_id, e)
+        except WebSocketDisconnect:
             pass
+        except Exception as e:
+            logger.warning("terminal reader exited: %s", e)
+
+    async def writer():
+        """Stream pane content changes to the client."""
+        prev_content = ""
+        try:
+            content = session.terminal_capture(0)
+            await websocket.send_text(content)
+            prev_content = content
+            while True:
+                await asyncio.sleep(0.5)
+                try:
+                    content = session.terminal_capture(0)
+                    if content != prev_content:
+                        await websocket.send_text(content)
+                        prev_content = content
+                except Exception:
+                    break
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.warning("terminal writer exited: %s", e)
+
+    reader_task = asyncio.create_task(reader())
+    writer_task = asyncio.create_task(writer())
+    done, pending = await asyncio.wait({reader_task, writer_task}, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    try:
+        await websocket.close()
+    except Exception:
+        pass
 
 
 SLASH_COMMANDS = [
