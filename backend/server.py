@@ -459,11 +459,20 @@ class RunManager:
 run_manager = RunManager()
 
 
-def _get_session_or_404(session_id: str):
+def _require_email(request: Request) -> str:
+    email = auth_module.current_user(request)
+    if not email:
+        raise HTTPException(status_code=401, detail="not signed in")
+    return email
+
+
+def _get_session_or_404(session_id: str, email: str):
     try:
-        return host.get(session_id)
+        return host.get_for_user(session_id, email)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not your session")
 
 
 def _get_current_question(session: CCSession) -> Optional[dict]:
@@ -474,9 +483,10 @@ def _get_current_question(session: CCSession) -> Optional[dict]:
 
 
 @app.post("/api/sessions", response_model=SessionInfo)
-def create_session(req: CreateSessionRequest):
+def create_session(req: CreateSessionRequest, request: Request):
+    email = _require_email(request)
     try:
-        session = host.create(req.session_id, working_dir=req.working_dir)
+        session = host.create(req.session_id, working_dir=req.working_dir, owner_email=email)
         return SessionInfo(
             id=session.id,
             working_dir=session.working_dir,
@@ -488,9 +498,10 @@ def create_session(req: CreateSessionRequest):
 
 
 @app.get("/api/sessions", response_model=list[SessionInfo])
-def list_sessions():
+def list_sessions(request: Request):
+    email = _require_email(request)
     results = []
-    for s in host.list():
+    for s in host.list_for_user(email):
         summary = s.summary()
         results.append(
             SessionInfo(
@@ -506,10 +517,11 @@ def list_sessions():
 
 
 @app.get("/api/sessions/{session_id}", response_model=SessionInfo)
-def get_session(session_id: str):
+def get_session(session_id: str, request: Request):
+    email = _require_email(request)
     try:
-        # Note: get() triggers lazy resume for dormant sessions
-        s = host.get(session_id)
+        # Note: get_for_user() triggers lazy resume for dormant sessions
+        s = host.get_for_user(session_id, email)
         summary = s.summary()
         return SessionInfo(
             id=s.id,
@@ -521,10 +533,20 @@ def get_session(session_id: str):
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not your session")
 
 
 @app.delete("/api/sessions/{session_id}")
-def destroy_session(session_id: str):
+def destroy_session(session_id: str, request: Request):
+    email = _require_email(request)
+    # Verify ownership before destroying
+    try:
+        host.get_for_user(session_id, email)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not your session")
     try:
         host.destroy(session_id)
         run_manager.destroy_session(session_id)
@@ -534,8 +556,9 @@ def destroy_session(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}/interrupt")
-def interrupt_session(session_id: str):
-    session = _get_session_or_404(session_id)
+def interrupt_session(session_id: str, request: Request):
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     try:
         session.send_keys("Escape")
         run_manager.interrupt_session(session_id)
@@ -545,8 +568,9 @@ def interrupt_session(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}/runs", response_model=RunResponse)
-def create_run(session_id: str, req: SendRequest):
-    session = _get_session_or_404(session_id)
+def create_run(session_id: str, req: SendRequest, request: Request):
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     _record_session_activity(session_id)
     run = run_manager.create_run(session_id)
 
@@ -561,7 +585,7 @@ def create_run(session_id: str, req: SendRequest):
 
 
 @app.post("/api/sessions/{session_id}/queue")
-def queue_message(session_id: str, req: SendRequest):
+def queue_message(session_id: str, req: SendRequest, request: Request):
     """Queue a message to Claude while a run is already active.
 
     Sends text directly to the tmux pane without acquiring the lock or
@@ -569,8 +593,9 @@ def queue_message(session_id: str, req: SendRequest):
     while working and processes it once the current turn finishes.
     The existing progress polling will pick up the response.
     """
+    email = _require_email(request)
     _record_session_activity(session_id)
-    session = _get_session_or_404(session_id)
+    session = _get_session_or_404(session_id, email)
     try:
         result = session.queue_message(req.message)
         return result
@@ -579,8 +604,9 @@ def queue_message(session_id: str, req: SendRequest):
 
 
 @app.get("/api/sessions/{session_id}/runs/{run_id}", response_model=RunResponse)
-def get_run(session_id: str, run_id: str):
-    _get_session_or_404(session_id)
+def get_run(session_id: str, run_id: str, request: Request):
+    email = _require_email(request)
+    _get_session_or_404(session_id, email)
     run = run_manager.get_run(run_id)
     if run is None or run.session_id != session_id:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -588,8 +614,9 @@ def get_run(session_id: str, run_id: str):
 
 
 @app.get("/api/sessions/{session_id}/progress")
-def get_progress(session_id: str):
-    session = _get_session_or_404(session_id)
+def get_progress(session_id: str, request: Request):
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     run_payload = run_manager.get_run_payload_for_session(session_id)
     snapshot = session.progress_snapshot()
     raw_snapshot = asdict(snapshot)
@@ -618,15 +645,17 @@ def get_progress(session_id: str):
 
 
 @app.get("/api/sessions/{session_id}/subagents")
-def get_subagents(session_id: str):
-    session = _get_session_or_404(session_id)
+def get_subagents(session_id: str, request: Request):
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     return {"subagents": session.subagents()}
 
 
 @app.post("/api/sessions/{session_id}/send", response_model=SendResponse)
-def send_message(session_id: str, req: SendRequest):
+def send_message(session_id: str, req: SendRequest, request: Request):
+    email = _require_email(request)
     _record_session_activity(session_id)
-    session = _get_session_or_404(session_id)
+    session = _get_session_or_404(session_id, email)
     run_manager.require_no_active_run(session_id)
     try:
         response = session.send(req.message, timeout=req.timeout)
@@ -636,8 +665,9 @@ def send_message(session_id: str, req: SendRequest):
 
 
 @app.post("/api/sessions/{session_id}/answer", response_model=SendResponse)
-def answer_question(session_id: str, req: AnswerRequest):
-    session = _get_session_or_404(session_id)
+def answer_question(session_id: str, req: AnswerRequest, request: Request):
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     run = run_manager.get_run_for_session(session_id)
 
     if _is_active_run(run):
@@ -664,9 +694,10 @@ class BtwRequest(BaseModel):
 
 
 @app.post("/api/sessions/{session_id}/btw")
-def btw(session_id: str, req: BtwRequest):
+def btw(session_id: str, req: BtwRequest, request: Request):
     """Ask a /btw side question — ephemeral, doesn't enter conversation history."""
-    session = _get_session_or_404(session_id)
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     try:
         answer = session.btw(req.question)
         return {"answer": answer, "timed_out": not bool(answer)}
@@ -675,9 +706,10 @@ def btw(session_id: str, req: BtwRequest):
 
 
 @app.get("/api/sessions/{session_id}/gmail/suggestions")
-def gmail_suggestions(session_id: str):
+def gmail_suggestions(session_id: str, request: Request):
     """Return Gmail search suggestions. Returns cache, kicks off background generation if stale."""
-    session = _get_session_or_404(session_id)
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     import json as _json
 
     cache_path = os.path.join(session.working_dir, "suggested-searches.json")
@@ -695,9 +727,10 @@ def gmail_suggestions(session_id: str):
 
 
 @app.get("/api/sessions/{session_id}/gmail/suggestions/debug")
-def gmail_suggestions_debug(session_id: str):
+def gmail_suggestions_debug(session_id: str, request: Request):
     """Debug: synchronously generate suggestions and return diagnostics."""
-    session = _get_session_or_404(session_id)
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     diag = {"idle": False, "btw_response": None, "error": None, "suggestions": []}
     try:
         diag["idle"] = session._is_tmux_idle()
@@ -739,9 +772,10 @@ def gmail_suggestions_debug(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}/refresh-summary")
-def refresh_summary(session_id: str):
+def refresh_summary(session_id: str, request: Request):
     """Trigger a single session's summary refresh (calls /btw in background)."""
-    session = _get_session_or_404(session_id)
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     try:
         result = session.generate_summary()
         return {"title": result.get("title", ""), "status": result.get("status", "")}
@@ -750,9 +784,10 @@ def refresh_summary(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}/toggle")
-def toggle_option(session_id: str, req: AnswerRequest):
+def toggle_option(session_id: str, req: AnswerRequest, request: Request):
     """Toggle a checkbox in a multi-select question."""
-    session = _get_session_or_404(session_id)
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     if not session.question_status():
         raise HTTPException(status_code=409, detail="No question is currently displayed")
     session.toggle_option(req.option_index)
@@ -760,9 +795,10 @@ def toggle_option(session_id: str, req: AnswerRequest):
 
 
 @app.post("/api/sessions/{session_id}/submit-multiselect", response_model=SendResponse)
-def submit_multiselect(session_id: str):
+def submit_multiselect(session_id: str, request: Request):
     """Submit a multi-select question after toggling options."""
-    session = _get_session_or_404(session_id)
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     if not session.question_status():
         raise HTTPException(status_code=409, detail="No question is currently displayed")
     response = session.submit_multiselect()
@@ -770,25 +806,28 @@ def submit_multiselect(session_id: str):
 
 
 @app.get("/api/sessions/{session_id}/jsonl")
-def get_jsonl(session_id: str):
+def get_jsonl(session_id: str, request: Request):
     """Return the raw JSONL transcript entries."""
-    session = _get_session_or_404(session_id)
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     return session.raw_transcript()
 
 
 @app.get("/api/sessions/{session_id}/files")
-def list_files(session_id: str):
-    session = _get_session_or_404(session_id)
+def list_files(session_id: str, request: Request):
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     return {"files": session.files()}
 
 
 @app.get("/api/sessions/{session_id}/eml-html/{path:path}")
-def eml_html(session_id: str, path: str):
+def eml_html(session_id: str, path: str, request: Request):
     """Serve the rendered HTML body of an EML file with inline images resolved."""
     import email
     import email.policy
 
-    session = _get_session_or_404(session_id)
+    user_email = _require_email(request)
+    session = _get_session_or_404(session_id, user_email)
     try:
         data = session.read_file(path)
     except (ValueError, FileNotFoundError) as e:
@@ -878,12 +917,13 @@ img {{ max-width: 100%; }}
 
 
 @app.get("/api/sessions/{session_id}/eml/{path:path}")
-def parse_eml(session_id: str, path: str):
+def parse_eml(session_id: str, path: str, request: Request):
     """Parse an EML file server-side and return structured parts as JSON."""
     import email
     import email.policy
 
-    session = _get_session_or_404(session_id)
+    user_email = _require_email(request)
+    session = _get_session_or_404(session_id, user_email)
     try:
         data = session.read_file(path)
     except (ValueError, FileNotFoundError) as e:
@@ -973,9 +1013,10 @@ def parse_eml(session_id: str, path: str):
 
 
 @app.get("/api/sessions/{session_id}/file-mtime/{path:path}")
-def file_mtime(session_id: str, path: str):
+def file_mtime(session_id: str, path: str, request: Request):
     """Return the modification time of a file (lightweight staleness check)."""
-    session = _get_session_or_404(session_id)
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     clean_path = path.strip("/")
     target = os.path.join(session.working_dir, clean_path) if clean_path else session.working_dir
     resolved = os.path.realpath(target)
@@ -988,8 +1029,9 @@ def file_mtime(session_id: str, path: str):
 
 
 @app.get("/api/sessions/{session_id}/files/{path:path}")
-def download_file(session_id: str, path: str):
-    session = _get_session_or_404(session_id)
+def download_file(session_id: str, path: str, request: Request):
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
 
     # Normalize: treat "/" or empty as root of working dir
     clean_path = path.strip("/")
@@ -1031,9 +1073,10 @@ def download_file(session_id: str, path: str):
 
 
 @app.delete("/api/sessions/{session_id}/gmail/download/{thread_id}")
-def remove_downloaded_thread(session_id: str, thread_id: str):
+def remove_downloaded_thread(session_id: str, thread_id: str, request: Request):
     """Remove downloaded Gmail thread attachments and clean up gmail-source.json."""
-    session = _get_session_or_404(session_id)
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     import json
     import shutil
 
@@ -1069,7 +1112,8 @@ _MAX_UPLOAD_BYTES = int(os.environ.get("CCHOST_MAX_UPLOAD_BYTES", 100 * 1024 * 1
 async def upload_file(session_id: str, request: Request):
     """Upload a file to the session's working directory."""
 
-    session = _get_session_or_404(session_id)
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     os.makedirs(session.working_dir, exist_ok=True)
 
     # Parse multipart form data
@@ -1101,9 +1145,10 @@ async def upload_file(session_id: str, request: Request):
 
 
 @app.get("/api/sessions/{session_id}/terminal")
-def get_terminal(session_id: str, lines: int = 0):
+def get_terminal(session_id: str, request: Request, lines: int = 0):
     """Capture tmux pane output. lines=0 (default) returns full scrollback history."""
-    session = _get_session_or_404(session_id)
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     return {"terminal": session.terminal_capture(lines)}
 
 
@@ -1130,9 +1175,12 @@ async def terminal_ws(websocket: WebSocket, session_id: str):
         return
 
     try:
-        session = host.get(session_id)
+        session = host.get_for_user(session_id, email)
     except KeyError:
         await websocket.close(code=4004, reason="Session not found")
+        return
+    except PermissionError:
+        await websocket.close(code=4403, reason="not your session")
         return
 
     await websocket.accept()
@@ -1225,9 +1273,10 @@ class SlashCommandRequest(BaseModel):
 
 
 @app.post("/api/sessions/{session_id}/command")
-def run_command(session_id: str, req: SlashCommandRequest):
+def run_command(session_id: str, req: SlashCommandRequest, request: Request):
     """Execute a slash command and capture the result."""
-    session = _get_session_or_404(session_id)
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     try:
         result = session.slash_command(req.command)
         return result
@@ -1236,8 +1285,9 @@ def run_command(session_id: str, req: SlashCommandRequest):
 
 
 @app.get("/api/sessions/{session_id}/conversation")
-def get_conversation(session_id: str):
-    session = _get_session_or_404(session_id)
+def get_conversation(session_id: str, request: Request):
+    email = _require_email(request)
+    session = _get_session_or_404(session_id, email)
     return {"conversation": session.conversation()}
 
 
@@ -1274,27 +1324,40 @@ class TopicInfo(BaseModel):
 
 
 @app.get("/api/topics", response_model=list[TopicInfo])
-def list_topics():
-    return topic_manager.list_topics()
+def list_topics(request: Request):
+    email = _require_email(request)
+    return topic_manager.list_for_user(email)
 
 
 @app.post("/api/topics", response_model=TopicInfo)
-def create_topic(req: CreateTopicRequest):
+def create_topic(req: CreateTopicRequest, request: Request):
+    email = _require_email(request)
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="Topic name cannot be empty")
-    return topic_manager.create_topic(req.name.strip())
+    return topic_manager.create_topic(req.name.strip(), owner_email=email)
 
 
 @app.get("/api/topics/{slug}", response_model=TopicInfo)
-def get_topic(slug: str):
+def get_topic(slug: str, request: Request):
+    email = _require_email(request)
     try:
-        return topic_manager.get_topic(slug)
+        return topic_manager.get_for_user(slug, email)
     except KeyError:
         raise HTTPException(status_code=404, detail="Topic not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not your topic")
 
 
 @app.delete("/api/topics/{slug}")
-def delete_topic(slug: str):
+def delete_topic(slug: str, request: Request):
+    email = _require_email(request)
+    # Verify ownership before delete.
+    try:
+        topic_manager.get_for_user(slug, email)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not your topic")
     try:
         topic_manager.delete_topic(slug)
         return {"ok": True}
@@ -1305,10 +1368,18 @@ def delete_topic(slug: str):
 
 
 @app.post("/api/topics/{slug}/conversations")
-def start_topic_conversation(slug: str):
+def start_topic_conversation(slug: str, request: Request):
+    email = _require_email(request)
+    # Verify ownership before starting a conversation under this topic.
+    try:
+        topic_manager.get_for_user(slug, email)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not your topic")
     try:
         session = topic_manager.start_conversation(slug)
-        topic = topic_manager.get_topic(slug)
+        topic = topic_manager.get_for_user(slug, email)
         conv = topic["conversations"][-1]
         return {"session_id": session.id, "conversation_id": conv["id"]}
     except KeyError:
@@ -1316,7 +1387,14 @@ def start_topic_conversation(slug: str):
 
 
 @app.post("/api/topics/{slug}/conversations/{conv_id}/resume")
-def resume_topic_conversation(slug: str, conv_id: str):
+def resume_topic_conversation(slug: str, conv_id: str, request: Request):
+    email = _require_email(request)
+    try:
+        topic_manager.get_for_user(slug, email)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not your topic")
     try:
         session = topic_manager.resume_conversation(slug, conv_id)
         return {"session_id": session.id}
@@ -1325,7 +1403,14 @@ def resume_topic_conversation(slug: str, conv_id: str):
 
 
 @app.post("/api/topics/{slug}/generate-context")
-def generate_topic_context(slug: str):
+def generate_topic_context(slug: str, request: Request):
+    email = _require_email(request)
+    try:
+        topic_manager.get_for_user(slug, email)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not your topic")
     try:
         content = topic_manager.generate_context(slug)
         return {"content": content, "generated": bool(content)}

@@ -68,6 +68,21 @@ def _email_from_request(request: Request) -> str:
     return email
 
 
+def _owner_email(request: Request) -> str:
+    """Return the signed-in user's email for ownership scoping. 401 if missing.
+
+    NOTE: This is distinct from `_email_from_request`, which selects which
+    Google account to use for Gmail/Drive API calls. Ownership is always
+    keyed on the signed-in cchost identity.
+    """
+    import auth as auth_module
+
+    email = auth_module.current_user(request)
+    if not email:
+        raise HTTPException(status_code=401, detail="not signed in")
+    return email
+
+
 def _creds_for(request: Request, scope: str) -> Credentials:
     """Fetch fresh broker-issued credentials for the email named by the request."""
     email = _email_from_request(request)
@@ -500,6 +515,7 @@ def analyze_thread(request: Request, thread_id: str):
     # Import host and run_manager from server (avoids circular at module level)
     from server import host, run_manager
 
+    owner = _owner_email(request)
     creds = _creds_for(request, "gmail.readonly")
 
     # 1. Create a new session
@@ -508,7 +524,7 @@ def analyze_thread(request: Request, thread_id: str):
     os.makedirs(working_dir, exist_ok=True)
 
     try:
-        session = host.create(session_id, working_dir=working_dir)
+        session = host.create(session_id, working_dir=working_dir, owner_email=owner)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -549,10 +565,13 @@ def download_thread_attachments(request: Request, session_id: str, thread_id: st
     """Download all attachments from a Gmail thread into the session working dir."""
     from server import host
 
+    owner = _owner_email(request)
     try:
-        session = host.get(session_id)
+        session = host.get_for_user(session_id, owner)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not your session")
 
     creds = _creds_for(request, "gmail.readonly")
 
@@ -610,10 +629,13 @@ def create_gmail_draft(request: Request, session_id: str, req: GmailDraftRequest
     """Create a Gmail draft reply from the session's generated email file."""
     from server import host
 
+    owner = _owner_email(request)
     try:
-        session = host.get(session_id)
+        session = host.get_for_user(session_id, owner)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not your session")
 
     creds = _creds_for(request, "gmail.compose")
 
@@ -870,10 +892,13 @@ def create_draft_from_file(request: Request, req: DraftFromFileRequest):
     """Create a Gmail draft from a .email.md file in a session."""
     from server import host
 
+    owner = _owner_email(request)
     try:
-        session = host.get(req.session_id)
+        session = host.get_for_user(req.session_id, owner)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not your session")
 
     if not req.path.endswith(".email.md"):
         raise HTTPException(status_code=400, detail="Path must end in .email.md")
@@ -945,10 +970,13 @@ def create_google_doc(request: Request, session_id: str):
     """Create a Google Doc from the session's audit files."""
     from server import host
 
+    owner = _owner_email(request)
     try:
-        session = host.get(session_id)
+        session = host.get_for_user(session_id, owner)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="not your session")
 
     creds = _creds_for(request, "drive.file")
 

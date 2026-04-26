@@ -43,6 +43,26 @@ from progress import derive_progress_snapshot, normalize_jsonl_entries
 logger = logging.getLogger("cchost")
 
 
+def _legacy_owner_email() -> str:
+    """Resolve the owner email assigned to legacy records that predate per-user ownership.
+
+    Resolution order:
+      1. ``CCHOST_LEGACY_OWNER`` env var (explicit override)
+      2. First entry of ``CCHOST_ALLOWED_EMAILS`` (comma-separated)
+      3. Empty string — record will be invisible to ``list_for_user`` /
+         ``get_for_user`` until manually fixed.
+    """
+    explicit = os.environ.get("CCHOST_LEGACY_OWNER", "").strip()
+    if explicit:
+        return explicit.lower()
+    allowed = os.environ.get("CCHOST_ALLOWED_EMAILS", "")
+    for raw in allowed.split(","):
+        candidate = raw.strip()
+        if candidate:
+            return candidate.lower()
+    return ""
+
+
 @dataclass
 class QuestionOption:
     """An option in an AskUserQuestion prompt."""
@@ -85,6 +105,7 @@ class CCSession:
     id: str
     working_dir: str
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    owner_email: str = ""
     _tmux_session: Optional[libtmux.Session] = field(default=None, repr=False)
     _host: Optional["CCHost"] = field(default=None, repr=False)
     _jsonl_path: Optional[str] = field(default=None, repr=False)
@@ -976,6 +997,18 @@ class CCSession:
         pane = self._tmux_session.active_window.active_pane
         pane.send_keys(keys, enter=False)
 
+    def send_raw_input(self, data: str) -> None:
+        """Send raw input bytes (e.g. xterm.js keystrokes) to tmux literally.
+
+        Unlike send_keys, this does not interpret tmux key names like 'Enter'
+        or 'C-c' — control bytes are passed through as-is. Used by the
+        interactive terminal WebSocket.
+        """
+        if self._tmux_session is None:
+            raise RuntimeError(f"Session {self.id} is destroyed")
+        pane = self._tmux_session.active_window.active_pane
+        pane.send_keys(data, enter=False, literal=True)
+
     def interrupt(self) -> None:
         """Send Ctrl+C (escape) to Claude Code."""
         self.send_keys("C-c")
@@ -1448,6 +1481,7 @@ class CCHost:
                     session = CCSession(
                         id=session_id,
                         working_dir=workdir,
+                        owner_email=_legacy_owner_email(),
                         _tmux_session=tmux_session,
                         _host=self,
                     )
@@ -1480,6 +1514,7 @@ class CCHost:
                 "working_dir": session.working_dir,
                 "claude_session_id": session._claude_session_id,
                 "created_at": session.created_at.isoformat(),
+                "owner_email": session.owner_email,
             }
         # Atomic write: write to temp file then rename
         tmp_path = path + ".tmp"
@@ -1488,28 +1523,41 @@ class CCHost:
         os.replace(tmp_path, path)
 
     def _load_dormant_sessions(self) -> None:
-        """Load sessions from manifest that don't have a live tmux process."""
+        """Load sessions from manifest that don't have a live tmux process.
+
+        Prunes entries whose working_dir no longer exists so the manifest
+        doesn't accumulate dead rows across restarts.
+        """
         manifest = self._load_manifest()
-        for session_id, meta in manifest.items():
+        pruned_any = False
+        for session_id, meta in list(manifest.items()):
             if session_id in self._sessions:
                 continue  # already rediscovered from tmux
             working_dir = meta.get("working_dir", "/tmp")
             if not os.path.isdir(working_dir):
-                logger.info("Skipping dormant session %s — working_dir %s gone", session_id, working_dir)
+                logger.info("Pruning dormant session %s — working_dir %s gone", session_id, working_dir)
+                pruned_any = True
                 continue
             created_str = meta.get("created_at")
             try:
                 created_at = datetime.fromisoformat(created_str) if created_str else datetime.now(timezone.utc)
             except (ValueError, TypeError):
                 created_at = datetime.now(timezone.utc)
+            owner_email = meta.get("owner_email")
+            if owner_email is None:
+                # Legacy record — migrate using env-var fallback.
+                owner_email = _legacy_owner_email()
             self._sessions[session_id] = CCSession(
                 id=session_id,
                 working_dir=working_dir,
                 created_at=created_at,
+                owner_email=owner_email,
                 _tmux_session=None,  # dormant — no tmux process
                 _host=self,
                 _claude_session_id=meta.get("claude_session_id"),
             )
+        if pruned_any:
+            self._save_manifest()  # remove skipped entries from disk
         logger.info(
             "Loaded %d dormant sessions from manifest",
             sum(1 for s in self._sessions.values() if s._tmux_session is None),
@@ -1520,7 +1568,13 @@ class CCHost:
     # ------------------------------------------------------------------
 
     def _resume_session(self, session: CCSession) -> None:
-        """Spin up a tmux process for a dormant session using claude --resume."""
+        """Spin up a tmux process for a dormant session using claude --resume.
+
+        If the tmux process can't be started or Claude never becomes ready,
+        this tears down any half-created tmux state so the session stays
+        cleanly dormant and a later attempt can retry (instead of being
+        stuck in a broken "resumed" state).
+        """
         with self._resume_lock:
             if session._tmux_session is not None:
                 return  # already resumed (another thread got here first)
@@ -1532,30 +1586,52 @@ class CCHost:
             if session._claude_session_id:
                 resume_flag = f"--resume {session._claude_session_id} "
 
-            tmux_session = self._server.new_session(
-                session_name=tmux_name,
-                start_directory=session.working_dir,
-                window_command=f"CCHOST_URL={cchost_url} claude {resume_flag}--dangerously-skip-permissions",
-            )
-            tmux_session.set_option("history-limit", self._history_limit)
-            session._tmux_session = tmux_session
-            session._wait_for_ready(is_resume=bool(session._claude_session_id))
-            # Re-resolve JSONL path after resume (may be a new file)
-            session._jsonl_path = None
-            session._last_line_count = 0
-            session._find_jsonl()
-            logger.info("Resumed session %s (claude_session_id=%s)", session.id, session._claude_session_id)
+            tmux_session = None
+            try:
+                tmux_session = self._server.new_session(
+                    session_name=tmux_name,
+                    start_directory=session.working_dir,
+                    window_command=f"CCHOST_URL={cchost_url} claude {resume_flag}--dangerously-skip-permissions",
+                )
+                tmux_session.set_option("history-limit", self._history_limit)
+                session._tmux_session = tmux_session
+                session._wait_for_ready(is_resume=bool(session._claude_session_id))
+                # Re-resolve JSONL path after resume (may be a new file)
+                session._jsonl_path = None
+                session._last_line_count = 0
+                session._find_jsonl()
+                logger.info("Resumed session %s (claude_session_id=%s)", session.id, session._claude_session_id)
+            except Exception as e:
+                logger.warning("Failed to resume session %s: %s", session.id, e)
+                # Tear down half-created state so the session stays dormant
+                session._tmux_session = None
+                if tmux_session is not None:
+                    try:
+                        tmux_session.kill()
+                    except Exception:
+                        pass
+                raise
 
     def create(
         self,
         session_id: str,
         working_dir: str = "/tmp",
         wait_ready: bool = True,
+        owner_email: str = "",
     ) -> CCSession:
-        """Create a new Claude Code session."""
+        """Create a new Claude Code session.
+
+        ``owner_email`` is stored on the session and persisted to the manifest
+        so it can be used by ``list_for_user`` / ``get_for_user`` to scope
+        access. Defaults to empty string for legacy callers; empty-owner
+        sessions are invisible to per-user lookups.
+        """
         if session_id in self._sessions:
             raise ValueError(f"Session {session_id} already exists")
-        if len(self._sessions) >= self._max_sessions:
+        # Cap only counts LIVE sessions; dormant-on-disk sessions don't consume
+        # tmux/memory and shouldn't block new conversations.
+        active = sum(1 for s in self._sessions.values() if s._tmux_session is not None)
+        if active >= self._max_sessions:
             raise RuntimeError(f"Max sessions ({self._max_sessions}) reached")
         if not re.match(r"^[a-zA-Z0-9_-]+$", session_id):
             raise ValueError(f"Invalid session ID: {session_id}")
@@ -1576,6 +1652,7 @@ class CCHost:
         session = CCSession(
             id=session_id,
             working_dir=working_dir,
+            owner_email=(owner_email or "").lower(),
             _tmux_session=tmux_session,
             _host=self,
         )
@@ -1594,6 +1671,15 @@ class CCHost:
         if session_id not in self._sessions:
             raise KeyError(f"Session {session_id} not found")
         session = self._sessions[session_id]
+        # Detect tmux session that got killed externally (e.g. tmux kill-session,
+        # reboot). Treat it as dormant so we re-resume instead of sending to a
+        # dead pane.
+        if session._tmux_session is not None:
+            expected_name = f"cchost-{session.id}"
+            live_names = {s.name for s in self._server.sessions}
+            if expected_name not in live_names:
+                logger.info("Session %s tmux was killed externally; marking dormant", session.id)
+                session._tmux_session = None
         # Lazy resume: spin up tmux if dormant
         if session._tmux_session is None:
             self._resume_session(session)
@@ -1602,6 +1688,33 @@ class CCHost:
 
     def list(self) -> list[CCSession]:
         return list(self._sessions.values())
+
+    def list_for_user(self, email: str) -> "list[CCSession]":
+        """Return sessions owned by ``email`` (case-insensitive).
+
+        Sessions with an empty ``owner_email`` (e.g. unmigrated legacy records
+        or those created without an owner) are excluded.
+        """
+        target = (email or "").lower()
+        if not target:
+            return []
+        return [s for s in self._sessions.values() if (s.owner_email or "").lower() == target]
+
+    def get_for_user(self, session_id: str, email: str) -> CCSession:
+        """Return the session ``session_id`` if it exists AND ``email`` owns it.
+
+        Raises:
+            KeyError: if no session with ``session_id`` exists.
+            PermissionError: if the session exists but the email does not match
+                its ``owner_email`` (case-insensitive).
+        """
+        if session_id not in self._sessions:
+            raise KeyError(f"Session {session_id} not found")
+        session = self._sessions[session_id]
+        if (session.owner_email or "").lower() != (email or "").lower() or not (email or "").strip():
+            raise PermissionError(f"User {email!r} does not own session {session_id!r}")
+        # Reuse the same lazy-resume + tmux-liveness path as get().
+        return self.get(session_id)
 
     def destroy(self, session_id: str) -> None:
         session = self._sessions.get(session_id)
@@ -1645,8 +1758,13 @@ class TopicManager:
             raise KeyError(f"Invalid topic slug: {slug}")
         return resolved
 
-    def create_topic(self, name: str) -> dict:
-        """Create a new topic directory with .topic.json metadata."""
+    def create_topic(self, name: str, owner_email: str = "") -> dict:
+        """Create a new topic directory with .topic.json metadata.
+
+        ``owner_email`` is recorded on the topic so it can be filtered with
+        ``list_for_user`` / ``get_for_user``. Defaults to empty string for
+        legacy callers; empty-owner topics are invisible to per-user lookups.
+        """
         slug = self._slugify(name)
         topic_dir = os.path.join(TOPICS_DIR, slug)
         os.makedirs(topic_dir, exist_ok=True)
@@ -1654,6 +1772,7 @@ class TopicManager:
             "name": name,
             "slug": slug,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "owner_email": (owner_email or "").lower(),
             "conversations": [],
         }
         self._write_metadata(topic_dir, metadata)
@@ -1686,6 +1805,30 @@ class TopicManager:
         except (json.JSONDecodeError, OSError) as exc:
             raise KeyError(f"Topic {slug} has corrupt metadata") from exc
 
+    def list_for_user(self, email: str) -> list[dict]:
+        """Return topics owned by ``email`` (case-insensitive).
+
+        Topics with an empty ``owner_email`` (e.g. unmigrated legacy records)
+        are excluded.
+        """
+        target = (email or "").lower()
+        if not target:
+            return []
+        return [t for t in self.list_topics() if (t.get("owner_email") or "").lower() == target]
+
+    def get_for_user(self, slug: str, email: str) -> dict:
+        """Return topic ``slug`` if it exists AND ``email`` owns it.
+
+        Raises:
+            KeyError: if no topic with ``slug`` exists.
+            PermissionError: if the topic exists but the email does not match
+                its ``owner_email`` (case-insensitive).
+        """
+        topic = self.get_topic(slug)  # KeyError if missing
+        if (topic.get("owner_email") or "").lower() != (email or "").lower() or not (email or "").strip():
+            raise PermissionError(f"User {email!r} does not own topic {slug!r}")
+        return topic
+
     def delete_topic(self, slug: str) -> None:
         """Delete a topic directory. Raises RuntimeError if an active conversation exists."""
         topic = self.get_topic(slug)  # validates slug
@@ -1705,8 +1848,14 @@ class TopicManager:
 
         shutil.rmtree(topic_dir)
 
-    def start_conversation(self, slug: str) -> CCSession:
-        """Start a new conversation in the topic. Stops any active conversation first."""
+    def start_conversation(self, slug: str, owner_email: str = "") -> CCSession:
+        """Start a new conversation in the topic. Stops any active conversation first.
+
+        ``owner_email`` is forwarded to the underlying ``CCHost.create`` so the
+        new session is owned by the same user as the topic. Defaults to empty
+        string for legacy callers; if not provided, the topic's stored
+        ``owner_email`` is used as a fallback so per-user filtering still works.
+        """
         topic = self.get_topic(slug)  # validates slug
         topic_dir = self._validate_slug(slug)
 
@@ -1723,9 +1872,12 @@ class TopicManager:
         # Persist stopped-conversation status before creating new session
         self._write_metadata(topic_dir, topic)
 
+        # Default to the topic's recorded owner so the session inherits ownership.
+        effective_owner = (owner_email or topic.get("owner_email") or "").lower()
+
         # Create new session with topic dir as working_dir
         conv_id = f"conv-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-        session = self.host.create(conv_id, working_dir=topic_dir)
+        session = self.host.create(conv_id, working_dir=topic_dir, owner_email=effective_owner)
 
         # Record conversation in metadata
         topic["conversations"].append(
@@ -1803,7 +1955,17 @@ class TopicManager:
             json.dump(metadata, f, indent=2)
 
     def _read_metadata(self, topic_dir: str) -> dict:
-        """Read .topic.json metadata from a topic directory."""
+        """Read .topic.json metadata from a topic directory.
+
+        Legacy records that pre-date per-user ownership are silently migrated
+        in-memory: a missing ``owner_email`` field is filled in from
+        ``CCHOST_LEGACY_OWNER`` / ``CCHOST_ALLOWED_EMAILS`` (see
+        ``_legacy_owner_email``). The migrated value is persisted back to disk
+        the next time the metadata is written.
+        """
         path = os.path.join(topic_dir, ".topic.json")
         with open(path, "r") as f:
-            return json.load(f)
+            metadata = json.load(f)
+        if isinstance(metadata, dict) and "owner_email" not in metadata:
+            metadata["owner_email"] = _legacy_owner_email()
+        return metadata
