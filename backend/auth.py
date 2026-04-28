@@ -84,50 +84,63 @@ def is_configured() -> bool:
     return bool(_allowed_emails())
 
 
-def make_session_cookie(email: str) -> str:
+def make_session_cookie(email: str, picture: Optional[str] = None, name: Optional[str] = None) -> str:
     now = int(time.time())
-    return jwt.encode(
-        {"email": email, "iat": now, "exp": now + _session_ttl_seconds()},
-        _session_secret(),
-        algorithm="HS256",
-    )
+    payload: dict = {"email": email, "iat": now, "exp": now + _session_ttl_seconds()}
+    if picture:
+        payload["picture"] = picture
+    if name:
+        payload["name"] = name
+    return jwt.encode(payload, _session_secret(), algorithm="HS256")
 
 
-def verify_session_cookie(value: str) -> Optional[str]:
+def verify_session_cookie(value: str) -> Optional[dict]:
+    """Returns the decoded payload (email + optional picture/name) or None."""
     try:
-        data = jwt.decode(value, _session_secret(), algorithms=["HS256"])
-        return data.get("email")
+        return jwt.decode(value, _session_secret(), algorithms=["HS256"])
     except jwt.PyJWTError as exc:
         logger.debug("session cookie verification failed: %s", exc)
         return None
 
 
-def verify_handoff_jwt(token: str) -> Optional[str]:
+def verify_handoff_jwt(token: str) -> Optional[dict]:
+    """Returns the decoded payload (email + optional picture/name/scopes) or None."""
     try:
-        data = jwt.decode(token, _handoff_secret(), algorithms=["HS256"])
-        return data.get("email")
+        return jwt.decode(token, _handoff_secret(), algorithms=["HS256"])
     except jwt.PyJWTError as exc:
         logger.warning("handoff JWT verification failed: %s", exc)
         return None
 
 
 def current_user(request: Request) -> Optional[str]:
+    payload = current_user_payload(request)
+    return payload.get("email") if payload else None
+
+
+def current_user_payload(request: Request) -> Optional[dict]:
     cookie = request.cookies.get(SESSION_COOKIE)
     if not cookie:
         return None
-    email = verify_session_cookie(cookie)
-    if not email:
+    payload = verify_session_cookie(cookie)
+    if not payload:
         return None
-    if email.lower() not in _allowed_emails():
+    email = payload.get("email")
+    if not email or email.lower() not in _allowed_emails():
         return None
-    return email
+    return payload
 
 
-def _set_session_cookie(response: Response, email: str, request: Request) -> None:
+def _set_session_cookie(
+    response: Response,
+    email: str,
+    request: Request,
+    picture: Optional[str] = None,
+    name: Optional[str] = None,
+) -> None:
     is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     response.set_cookie(
         SESSION_COOKIE,
-        make_session_cookie(email),
+        make_session_cookie(email, picture=picture, name=name),
         max_age=_session_ttl_seconds(),
         httponly=True,
         secure=is_https,
@@ -149,10 +162,14 @@ router = APIRouter()
 
 @router.get("/api/auth/me")
 def auth_me(request: Request):
-    email = current_user(request)
-    if not email:
+    payload = current_user_payload(request)
+    if not payload:
         raise HTTPException(status_code=401, detail="not signed in")
-    return {"email": email}
+    return {
+        "email": payload.get("email"),
+        "picture": payload.get("picture"),
+        "name": payload.get("name"),
+    }
 
 
 @router.get("/api/auth/login")
@@ -169,7 +186,8 @@ def auth_login(request: Request, return_url: str = "/"):
     scheme = "https" if request.headers.get("x-forwarded-proto") == "https" else request.url.scheme
     our_callback = f"{scheme}://{host}/api/auth/callback?return={requests.utils.quote(return_url, safe='')}"
     try:
-        broker_url = broker_client.start_url(our_callback, "openid")
+        # Request profile so we get the user's name + picture for the avatar.
+        broker_url = broker_client.start_url(our_callback, "openid,profile")
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=f"broker not configured: {exc}")
     return RedirectResponse(url=broker_url)
@@ -184,14 +202,23 @@ def auth_callback(request: Request):
     token = request.query_params.get(HANDOFF_QUERY_PARAM, "")
     if not token:
         raise HTTPException(status_code=400, detail="missing silver_oauth handoff token")
-    email = verify_handoff_jwt(token)
-    if not email:
+    payload = verify_handoff_jwt(token)
+    if not payload:
         raise HTTPException(status_code=401, detail="handoff token invalid or expired")
+    email = payload.get("email")
+    if not email:
+        raise HTTPException(status_code=401, detail="handoff token missing email")
     if email.lower() not in _allowed_emails():
         logger.info("rejected sign-in for non-allowlisted email: %s", email)
         raise HTTPException(status_code=403, detail=f"{email} is not allowed to use this app")
     response = RedirectResponse(url=return_target)
-    _set_session_cookie(response, email, request)
+    _set_session_cookie(
+        response,
+        email,
+        request,
+        picture=payload.get("picture"),
+        name=payload.get("name"),
+    )
     return response
 
 
@@ -218,7 +245,7 @@ def verify_handoff(request: Request, payload: dict):
     token = (payload or {}).get("token", "")
     if not token:
         raise HTTPException(status_code=400, detail="token required")
-    email = verify_handoff_jwt(token)
-    if not email:
+    handoff = verify_handoff_jwt(token)
+    if not handoff or not handoff.get("email"):
         raise HTTPException(status_code=401, detail="handoff token invalid or expired")
-    return {"email": email}
+    return {"email": handoff["email"]}

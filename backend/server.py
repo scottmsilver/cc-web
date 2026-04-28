@@ -1169,7 +1169,8 @@ async def terminal_ws(websocket: WebSocket, session_id: str):
     """
     # WebSockets bypass the HTTP auth middleware; check the session cookie here.
     cookie = websocket.cookies.get(auth_module.SESSION_COOKIE)
-    email = auth_module.verify_session_cookie(cookie) if cookie else None
+    payload = auth_module.verify_session_cookie(cookie) if cookie else None
+    email = payload.get("email") if payload else None
     if not email or email.lower() not in auth_module._allowed_emails():
         await websocket.close(code=4401, reason="not signed in")
         return

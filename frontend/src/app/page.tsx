@@ -22,6 +22,7 @@ import { TopicSelector } from "@/components/topic-selector";
 import type { Topic, TranscriptTask } from "@/lib/types";
 import { TaskPanel } from "@/components/task-panel";
 import { TabBar, type TabId } from "@/components/tab-bar";
+import { UserMenu } from "@/components/user-menu";
 import { isBinaryFile, getFileName, groupByDirectory, CCHOST_API } from "@/lib/config";
 import {
   fetchGmailStatus,
@@ -1072,6 +1073,7 @@ export default function Chat() {
             onCreateTopic={(name) => void handleNewTopic(name)}
             onDeleteTopic={handleDeleteTopic}
           />
+          <UserMenu />
         </div>
       </div>
 
