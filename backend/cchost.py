@@ -1463,11 +1463,18 @@ class CCHost:
         self._history_limit = history_limit
         self._resume_lock = threading.Lock()
         self._manifest_path_override = manifest_path
+        # Suppress _save_manifest during init so partial state (e.g. _find_jsonl
+        # discovering a claude_session_id mid-rediscover) doesn't truncate the
+        # manifest before _load_dormant_sessions has had a chance to load
+        # entries that aren't backed by a live tmux pane.
+        self._init_complete = False
         self._rediscover()
         self._load_dormant_sessions()
-        # Persist any sessions found via tmux rediscovery
-        if self._sessions:
-            self._save_manifest()
+        self._init_complete = True
+        # One coherent save at the end with the union of rediscovered + dormant.
+        # Always save (even if zero sessions) so pruning of stale dormant
+        # entries during _load_dormant_sessions persists to disk.
+        self._save_manifest()
 
     def _rediscover(self) -> None:
         """Find existing cchost-* tmux sessions."""
@@ -1506,6 +1513,9 @@ class CCHost:
             return {}
 
     def _save_manifest(self) -> None:
+        # No-op during init — the constructor does one coherent save at the end.
+        if not getattr(self, "_init_complete", True):
+            return
         path = self._manifest_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         manifest = {}

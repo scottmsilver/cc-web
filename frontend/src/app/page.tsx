@@ -29,7 +29,6 @@ import {
   captureSilverOAuthEmailFromUrl,
   getSilverOAuthEmail,
   fetchSessions as apiFetchSessions,
-  createSession as apiCreateSession,
   deleteSession as apiDeleteSession,
   fetchProgress as apiFetchProgress,
   fetchRun as apiFetchRun,
@@ -53,7 +52,6 @@ import type { ProgressResponse, RunResponse } from "@/lib/progress";
 const DEFAULT_RUN_TIMEOUT_SECONDS = 900;
 const POLL_INTERVAL_MS = 1200;
 const POLL_FAILURE_LIMIT = 3;
-const WORKING_DIR_ROOT = "/tmp/cchost-ui";
 
 type Message = {
   id: string;
@@ -220,15 +218,6 @@ function makeMessageId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function generateSessionId(): string {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `session-${stamp}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function getSessionWorkingDir(sessionId: string): string {
-  return `${WORKING_DIR_ROOT}/${sessionId}`;
-}
-
 function normalizeSessionRecord(value: unknown): SessionRecord | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -326,6 +315,7 @@ export default function Chat() {
   const activeSessionRef = useRef<string | null>(null);
   const urlInitializedRef = useRef(false);
   const progressRef = useRef<ProgressResponse | null>(null);
+  const ensureSessionPromiseRef = useRef<Promise<string> | null>(null);
 
   // Keep progressRef in sync so answerQuestion avoids stale closure
   useEffect(() => {
@@ -654,37 +644,43 @@ export default function Chat() {
     }
   };
 
-  const ensureSession = async (): Promise<string> => {
+  const ensureSession = async (messageText?: string): Promise<string> => {
     if (activeSessionRef.current) {
       return activeSessionRef.current;
     }
-
-    // If a topic is active, start a conversation in it
-    if (activeTopic) {
-      const result = await apiStartTopicConversation(activeTopic);
-      skipConversationLoadForSessionRef.current = result.session_id;
-      activeSessionRef.current = result.session_id;
-      setActiveSession(result.session_id);
-      void fetchTopics();
-      return result.session_id;
+    // If a creation is already in flight, wait for it instead of starting another.
+    if (ensureSessionPromiseRef.current) {
+      return ensureSessionPromiseRef.current;
     }
+    const promise = (async () => {
+      try {
+        // If a topic is active, start a conversation in it
+        if (activeTopic) {
+          const result = await apiStartTopicConversation(activeTopic);
+          skipConversationLoadForSessionRef.current = result.session_id;
+          activeSessionRef.current = result.session_id;
+          setActiveSession(result.session_id);
+          void fetchTopics();
+          return result.session_id;
+        }
 
-    // Legacy: create a standalone session
-    const sessionId = generateSessionId();
-    const response = await apiCreateSession(sessionId, getSessionWorkingDir(sessionId));
-
-    const payload =
-      normalizeSessionRecord(response) ?? { id: sessionId, working_dir: getSessionWorkingDir(sessionId) };
-    skipConversationLoadForSessionRef.current = payload.id;
-    activeSessionRef.current = payload.id;
-    setActiveSession(payload.id);
-    setSessions((prev) => {
-      if (prev.some((session) => session.id === payload.id)) {
-        return prev;
+        // No topic active — auto-create one seeded from the message text so the
+        // invariant "every session belongs to a topic" holds.
+        const seed = (messageText ?? "").trim().slice(0, 60) || "untitled";
+        const topic = await apiCreateTopic(seed);
+        const result = await apiStartTopicConversation(topic.slug);
+        skipConversationLoadForSessionRef.current = result.session_id;
+        activeSessionRef.current = result.session_id;
+        setActiveTopic(topic.slug);
+        setActiveSession(result.session_id);
+        void fetchTopics();
+        return result.session_id;
+      } finally {
+        ensureSessionPromiseRef.current = null;
       }
-      return [payload, ...prev];
-    });
-    return payload.id;
+    })();
+    ensureSessionPromiseRef.current = promise;
+    return promise;
   };
 
   const doStartRun = async (sessionId: string, message: string) => {
@@ -705,7 +701,7 @@ export default function Chat() {
     if (message.startsWith("/")) {
       setIsLoading(true);
       try {
-        const sessionId = await ensureSession();
+        const sessionId = await ensureSession(message);
         const result = await apiRunSlashCommand(sessionId, message);
         if (result.type === "overlay") {
           // Trigger immediate JSONL refresh so result appears without poll delay
@@ -740,7 +736,7 @@ export default function Chat() {
     setIsLoading(true);
 
     try {
-      const sessionId = await ensureSession();
+      const sessionId = await ensureSession(message);
       await doStartRun(sessionId, fullMessage);
       setActiveTab("chat");
       // Clear attachment chips after successful send

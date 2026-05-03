@@ -22,19 +22,6 @@ export async function fetchSessions(): Promise<unknown[]> {
   return (await res.json()) as unknown[];
 }
 
-export async function createSession(
-  sessionId: string,
-  workingDir: string,
-): Promise<unknown> {
-  const res = await fetch(`${CCHOST_API}/api/sessions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, working_dir: workingDir }),
-  });
-  if (!res.ok) throw new Error(`Failed to create session: HTTP ${res.status}`);
-  return res.json();
-}
-
 export async function deleteSession(sessionId: string): Promise<void> {
   await fetch(`${CCHOST_API}/api/sessions/${sessionId}`, { method: "DELETE" });
 }

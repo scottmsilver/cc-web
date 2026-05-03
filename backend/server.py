@@ -1,8 +1,7 @@
 """
-cchost server — REST API + Gradio chat UI.
+cchost server — REST API.
 
 REST API endpoints:
-  POST   /api/sessions                    Create a session
   GET    /api/sessions                    List sessions
   GET    /api/sessions/{id}               Get session info
   DELETE /api/sessions/{id}               Destroy session
@@ -11,8 +10,6 @@ REST API endpoints:
   GET    /api/sessions/{id}/files         List files
   GET    /api/sessions/{id}/files/{path}  Download file
   GET    /api/sessions/{id}/conversation  Get conversation history
-
-Gradio UI at /ui — conversational chat interface with file browser.
 """
 
 import logging
@@ -37,11 +34,11 @@ logger = logging.getLogger("cchost")
 
 
 import uvicorn
-from cchost import CCHost, CCSession, TopicManager
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
 from fastapi.responses import Response as HTTPResponse
 from pydantic import BaseModel, Field
+
+from cchost import CCHost, CCSession, TopicManager
 
 # ============================================================
 # Global host instance
@@ -56,10 +53,11 @@ topic_manager = TopicManager(host)
 # REST API
 # ============================================================
 
-import auth as auth_module
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
+
+import auth as auth_module
 
 app = FastAPI(title="cchost", description="Claude Code as a hosted service")
 
@@ -88,7 +86,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if (
             path in auth_module.PUBLIC_PATHS
             or path.startswith("/api/auth/")
-            or path.startswith("/static/")
             or path.startswith("/favicon")
             or request.method == "OPTIONS"
         ):
@@ -114,11 +111,6 @@ from google_routes import router as google_router
 
 app.include_router(google_router)
 app.include_router(auth_module.router)
-
-
-class CreateSessionRequest(BaseModel):
-    session_id: str
-    working_dir: str = "/tmp"
 
 
 class SendRequest(BaseModel):
@@ -480,21 +472,6 @@ def _get_current_question(session: CCSession) -> Optional[dict]:
     if isinstance(question, dict):
         return question
     return None
-
-
-@app.post("/api/sessions", response_model=SessionInfo)
-def create_session(req: CreateSessionRequest, request: Request):
-    email = _require_email(request)
-    try:
-        session = host.create(req.session_id, working_dir=req.working_dir, owner_email=email)
-        return SessionInfo(
-            id=session.id,
-            working_dir=session.working_dir,
-            state="idle",
-            created_at=session.created_at.isoformat(),
-        )
-    except (ValueError, RuntimeError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/sessions", response_model=list[SessionInfo])
@@ -1292,14 +1269,6 @@ def get_conversation(session_id: str, request: Request):
     return {"conversation": session.conversation()}
 
 
-_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-
-
-@app.get("/ui")
-def chat_ui():
-    return FileResponse(os.path.join(_STATIC_DIR, "chat.html"), media_type="text/html")
-
-
 # ============================================================
 # Topics API
 # ============================================================
@@ -1473,5 +1442,4 @@ def _background_summary_refresh():
 if __name__ == "__main__":
     print("Starting cchost server...")
     print("  REST API:  http://localhost:8420/docs")
-    print("  Chat UI:   http://localhost:8420/ui")
     uvicorn.run(app, host="0.0.0.0", port=8420)

@@ -28,11 +28,12 @@ import os
 import time
 from typing import Optional
 
-import broker_client
 import jwt
 import requests
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
+
+import broker_client
 
 logger = logging.getLogger("cchost")
 
@@ -47,7 +48,6 @@ PUBLIC_PATHS: set[str] = {
     "/api/auth/logout",
     "/health",
     "/",
-    "/ui",
 }
 
 
