@@ -3,19 +3,63 @@
 import { useRef, useEffect, useState } from "react";
 import type { Topic } from "@/lib/types";
 
+export type SessionState =
+  | "working"
+  | "awaiting_question"
+  | "awaiting_permission"
+  | "idle"
+  | "dormant";
+
 type TopicSelectorProps = {
   topics: Topic[];
   activeTopic: string | null;
   activeSession: string | null;
+  /**
+   * Map session_id → runtime state from /api/sessions. Used to render a
+   * status pill next to each conversation. Sessions not in the map render
+   * nothing (e.g. stale topic conv records).
+   */
+  sessionStates?: Record<string, SessionState>;
   onSelectTopic: (slug: string, sessionId: string) => void;
   onCreateTopic: (name: string) => void;
   onDeleteTopic: (slug: string) => void;
 };
 
+const STATE_DISPLAY: Record<SessionState, { label: string; dot: string; title: string }> = {
+  working: { label: "working", dot: "bg-yellow-500", title: "Claude is thinking" },
+  awaiting_question: {
+    label: "?",
+    dot: "bg-th-accent",
+    title: "Claude is asking a question",
+  },
+  awaiting_permission: {
+    label: "!",
+    dot: "bg-th-accent",
+    title: "Claude is waiting on a permission prompt",
+  },
+  idle: { label: "idle", dot: "bg-green-500", title: "Idle, ready for input" },
+  dormant: { label: "dormant", dot: "bg-th-text-faint", title: "Dormant — will resume on next message" },
+};
+
+function StatePill({ state }: { state: SessionState | undefined }) {
+  if (!state) return null;
+  const meta = STATE_DISPLAY[state];
+  return (
+    <span
+      title={meta.title}
+      className="inline-flex items-center gap-1 rounded-full bg-th-surface px-1.5 py-0.5 text-[10px] text-th-text-muted"
+    >
+      <span className={`inline-block h-1.5 w-1.5 rounded-full ${meta.dot}`} />
+      {meta.label}
+    </span>
+  );
+}
+
 export function TopicSelector({
   topics,
   activeTopic,
   activeSession,
+  sessionStates,
   onSelectTopic,
   onCreateTopic,
   onDeleteTopic,
@@ -139,8 +183,15 @@ export function TopicSelector({
                       }}
                       className="flex-1 min-w-0 text-left"
                     >
-                      <div className="truncate text-sm transition-opacity duration-300">
-                        {topic.name}
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm transition-opacity duration-300">
+                          {topic.name}
+                        </span>
+                        {(() => {
+                          const latest = topic.conversations[topic.conversations.length - 1];
+                          const s = latest && sessionStates?.[latest.session_id];
+                          return s ? <StatePill state={s} /> : null;
+                        })()}
                       </div>
                       <div className="truncate text-xs text-th-text-faint">
                         {topic.conversations.length}{" "}
@@ -205,8 +256,9 @@ export function TopicSelector({
                             }`}
                           >
                             <div className="min-w-0 flex-1">
-                              <div className="truncate">
-                                {conv.title || conv.id}
+                              <div className="flex items-center gap-2">
+                                <span className="truncate">{conv.title || conv.id}</span>
+                                <StatePill state={sessionStates?.[conv.session_id]} />
                               </div>
                               <div className="truncate text-th-text-faint">
                                 {conv.status}

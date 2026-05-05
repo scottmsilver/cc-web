@@ -18,7 +18,7 @@ import { GmailPicker, type SelectedThread, type SuggestedSearch } from "@/compon
 import type { GmailDownload } from "@/components/chat-input";
 import { DraftExportButtons } from "@/components/draft-export-buttons";
 import { SessionSelector } from "@/components/session-selector";
-import { TopicSelector } from "@/components/topic-selector";
+import { TopicSelector, type SessionState } from "@/components/topic-selector";
 import type { Topic, TranscriptTask } from "@/lib/types";
 import { TaskPanel } from "@/components/task-panel";
 import { TabBar, type TabId } from "@/components/tab-bar";
@@ -64,6 +64,7 @@ type SessionRecord = {
   working_dir?: string | null;
   title?: string;
   status?: string;
+  state?: string;
 };
 
 type ConversationEntry = {
@@ -240,6 +241,7 @@ function normalizeSessionRecord(value: unknown): SessionRecord | null {
     working_dir: typeof v.working_dir === "string" ? v.working_dir : null,
     title: typeof v.title === "string" ? v.title : undefined,
     status: typeof v.status === "string" ? v.status : undefined,
+    state: typeof v.state === "string" ? v.state : undefined,
   };
 }
 
@@ -1065,6 +1067,17 @@ export default function Chat() {
             topics={topics}
             activeTopic={activeTopic}
             activeSession={activeSession}
+            sessionStates={Object.fromEntries(
+              sessions
+                .filter((s): s is SessionRecord & { state: SessionState } =>
+                  s.state === "working" ||
+                  s.state === "awaiting_question" ||
+                  s.state === "awaiting_permission" ||
+                  s.state === "idle" ||
+                  s.state === "dormant"
+                )
+                .map((s) => [s.id, s.state])
+            )}
             onSelectTopic={handleSelectTopic}
             onCreateTopic={(name) => void handleNewTopic(name)}
             onDeleteTopic={handleDeleteTopic}
@@ -1172,6 +1185,11 @@ export default function Chat() {
                 onFilesUploaded={() => { const sid = activeSessionRef.current; if (sid) void fetchFiles(sid); }}
                 sessionFiles={files}
                 isWorking={isLoading}
+                sessionState={
+                  activeSession
+                    ? sessions.find((s) => s.id === activeSession)?.state
+                    : undefined
+                }
                 onInterrupt={() => {
                   if (activeSession) {
                     void import("@/lib/api").then(({ interruptSession }) =>

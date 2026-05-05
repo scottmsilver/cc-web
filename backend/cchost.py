@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import libtmux
+
 from progress import derive_progress_snapshot, normalize_jsonl_entries
 
 logger = logging.getLogger("cchost")
@@ -434,27 +435,32 @@ class CCSession:
         """
         Return the current unanswered question, if any.
 
-        Sources (in priority order):
-        1. Hook events — best structured data (from PreToolUse)
-        2. JSONL transcript — structured (from tool_use blocks)
-        3. tmux screen — last resort, parsed from TUI
+        Gating is now driven by ``state_classifier`` rather than tmux
+        screen-scraping: a question is "pending" iff the events log shows a
+        ``PreToolUse`` for ``AskUserQuestion`` with no later ``PostToolUse``.
+        That's exactly the ``awaiting_question`` state. The tmux pane is used
+        only as a tie-breaker to validate the payload — if the structured
+        question's text doesn't appear on screen, we keep falling through
+        to the next source rather than ship a stale question to the UI.
 
-        tmux "Enter to select" is used as a boolean gate.
-        If the structured source returns a question that doesn't match
-        what's on screen, we fall through to the next source.
+        Sources (in priority order):
+        1. Hook events — best structured data (from PreToolUse).
+        2. JSONL transcript — structured (from tool_use blocks).
+        3. tmux screen — last resort, parsed from TUI.
         """
-        if not self._tmux_shows_question():
+        if self.state != "awaiting_question":
             return None
 
-        # Get what's visible on screen for validation
-        try:
-            pane = self._tmux_session.active_window.active_pane
-            screen = "\n".join(pane.capture_pane(start=-20))
-        except Exception:
-            screen = ""
+        # Capture screen once for the payload-validation tie-breaker.
+        screen = ""
+        if self._tmux_session is not None:
+            try:
+                pane = self._tmux_session.active_window.active_pane
+                screen = "\n".join(pane.capture_pane(start=-20))
+            except Exception:
+                screen = ""
 
         def _question_matches_screen(q: dict) -> bool:
-            """Check if a structured question matches what's on tmux."""
             q_text = q.get("question", "")
             if not q_text:
                 return False
@@ -483,6 +489,34 @@ class CCSession:
     def is_dormant(self) -> bool:
         """True if session exists in manifest but has no live tmux process."""
         return self._tmux_session is None
+
+    @property
+    def state(self) -> str:
+        """Classify the session's runtime state without screen-scraping.
+
+        Returns one of ``working`` / ``awaiting_permission`` /
+        ``awaiting_question`` / ``idle`` / ``dormant``. See
+        ``state_classifier`` for the decision rules.
+        """
+        from state_classifier import classify
+
+        # The tmux pane runs claude as the pane process (pane_pid IS the
+        # claude PID — no shell wrapper). If the pane is gone, the session
+        # is dormant by definition.
+        claude_pid: Optional[int] = None
+        if self._tmux_session is not None:
+            try:
+                pane = self._tmux_session.active_window.active_pane
+                claude_pid = int(pane.pane_pid) if pane.pane_pid else None
+            except Exception:
+                claude_pid = None
+
+        events_path = os.path.join(self.working_dir, ".cchost-events.jsonl")
+        return classify(
+            claude_pid=claude_pid,
+            jsonl_path=self._ensure_jsonl_path(),
+            events_path=events_path,
+        )
 
     def _is_tmux_idle(self) -> bool:
         """Check if the tmux pane shows Claude Code's idle prompt (❯)."""

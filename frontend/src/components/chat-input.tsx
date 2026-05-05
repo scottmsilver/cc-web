@@ -124,6 +124,7 @@ export function ChatInput({
   ensureSession,
   sessionFiles,
   isWorking,
+  sessionState,
   onInterrupt,
   externalInput,
   onInputChange,
@@ -139,6 +140,8 @@ export function ChatInput({
   ensureSession?: () => Promise<string>;
   sessionFiles?: string[];
   isWorking?: boolean;
+  /** Runtime state from the classifier — drives the spinner inside the submit button. */
+  sessionState?: string;
   onInterrupt?: () => void;
   externalInput?: string;
   onInputChange?: (value: string) => void;
@@ -603,24 +606,26 @@ export function ChatInput({
             disabled={disabled}
             className="flex-1 bg-transparent px-2 py-2.5 text-sm text-th-text focus:outline-none placeholder-th-text-muted disabled:opacity-50 resize-none overflow-hidden"
           />
-          {isWorking && !input.trim() ? (
-            <button
-              type="button"
-              onClick={onInterrupt}
-              className="flex items-center justify-center w-8 h-8 rounded-lg bg-red-600 hover:bg-red-500 text-white transition-colors flex-shrink-0 mr-1"
-              title="Stop (Escape)"
-            >
-              ■
-            </button>
-          ) : (
+          <div className="relative flex-shrink-0 mr-1">
+            {(sessionState === "working" || isWorking) && (
+              <div
+                aria-hidden
+                className="pointer-events-none absolute -inset-1 rounded-lg border-2 border-th-accent border-t-transparent animate-spin"
+              />
+            )}
             <button
               type="submit"
               disabled={disabled || !allUploaded || (!input.trim() && uploadedFiles.length === 0)}
-              className="flex items-center justify-center w-8 h-8 rounded-lg bg-th-accent hover:bg-th-accent-hover disabled:bg-th-surface-hover disabled:text-th-text-muted text-white transition-colors disabled:cursor-not-allowed flex-shrink-0 mr-1"
+              className="relative flex items-center justify-center w-8 h-8 rounded-lg bg-th-accent hover:bg-th-accent-hover disabled:bg-th-surface-hover disabled:text-th-text-muted text-white transition-colors disabled:cursor-not-allowed"
+              title={
+                sessionState === "working" || isWorking
+                  ? "Claude is working — your message will queue"
+                  : "Send"
+              }
             >
               ↑
             </button>
-          )}
+          </div>
 
 
           {/* @ autocomplete dropdown */}

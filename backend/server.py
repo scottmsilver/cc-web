@@ -484,7 +484,7 @@ def list_sessions(request: Request):
             SessionInfo(
                 id=s.id,
                 working_dir=s.working_dir,
-                state="dormant" if s.is_dormant else "active",
+                state=s.state,
                 created_at=s.created_at.isoformat(),
                 title=summary.get("title", ""),
                 status=summary.get("status", ""),
@@ -503,7 +503,7 @@ def get_session(session_id: str, request: Request):
         return SessionInfo(
             id=s.id,
             working_dir=s.working_dir,
-            state="dormant" if s.is_dormant else "active",
+            state=s.state,
             created_at=s.created_at.isoformat(),
             title=summary.get("title", ""),
             status=summary.get("status", ""),
