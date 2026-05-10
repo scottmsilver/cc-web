@@ -495,11 +495,16 @@ export async function fetchTopics(): Promise<Topic[]> {
   return (await res.json()) as Topic[];
 }
 
-export async function createTopic(name: string): Promise<Topic> {
+export async function createTopic(
+  name: string,
+  options?: { backend?: "tmux" | "bhatti" },
+): Promise<Topic> {
+  const body: { name: string; backend?: "tmux" | "bhatti" } = { name };
+  if (options?.backend) body.backend = options.backend;
   const res = await fetch(`${CCHOST_API}/api/topics`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Failed to create topic: HTTP ${res.status}`);
   return (await res.json()) as Topic;
@@ -516,10 +521,19 @@ export async function deleteTopic(slug: string): Promise<void> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
-export async function startTopicConversation(slug: string): Promise<{ session_id: string; conversation_id: string }> {
-  const res = await fetch(`${CCHOST_API}/api/topics/${encodeURIComponent(slug)}/conversations`, {
-    method: "POST",
-  });
+export async function startTopicConversation(
+  slug: string,
+  options?: { backend?: "tmux" | "bhatti" },
+): Promise<{ session_id: string; conversation_id: string }> {
+  const init: RequestInit = { method: "POST" };
+  if (options?.backend) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify({ backend: options.backend });
+  }
+  const res = await fetch(
+    `${CCHOST_API}/api/topics/${encodeURIComponent(slug)}/conversations`,
+    init,
+  );
   if (!res.ok) throw new Error(`Failed to start conversation: HTTP ${res.status}`);
   return (await res.json()) as { session_id: string; conversation_id: string };
 }

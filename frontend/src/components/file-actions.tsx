@@ -1,8 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { getFileUrl } from "@/lib/api";
+import { createDraftFromFile, getFileUrl } from "@/lib/api";
 import { getFileName } from "@/lib/config";
+
+const MAIL_ICON = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="5" width="18" height="14" rx="2" />
+    <polyline points="3 7 12 13 21 7" />
+  </svg>
+);
 
 const CHECK_ICON = (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -144,9 +151,27 @@ export function FileActionButtons({
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const [renderedCopyState, setRenderedCopyState] = useState<"idle" | "copied">("idle");
   const [refState, setRefState] = useState<"idle" | "copied">("idle");
+  const [draftState, setDraftState] = useState<
+    | { kind: "idle" }
+    | { kind: "sending" }
+    | { kind: "done"; url: string }
+    | { kind: "error"; msg: string }
+  >({ kind: "idle" });
   const fileUrl = getFileUrl(sessionId, filePath);
   const ext = filePath.split(".").pop()?.toLowerCase() || "";
   const isMd = ext === "md";
+  const isEmailMd = filePath.toLowerCase().endsWith(".email.md");
+
+  const handleCreateDraft = async () => {
+    setDraftState({ kind: "sending" });
+    try {
+      const r = await createDraftFromFile(sessionId, filePath);
+      setDraftState({ kind: "done", url: r.draft_url });
+      window.open(r.draft_url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setDraftState({ kind: "error", msg: err instanceof Error ? err.message : "Draft failed" });
+    }
+  };
 
   const handleCopy = async (mode: "source" | "rendered" = "source") => {
     try {
@@ -196,6 +221,24 @@ export function FileActionButtons({
       >
         {refState === "copied" ? CHECK_ICON : <span className="text-xs font-bold leading-none">@</span>}
       </button>
+      {isEmailMd && (
+        <button
+          onClick={() => void handleCreateDraft()}
+          className={ICON_BTN}
+          disabled={draftState.kind === "sending"}
+          title={
+            draftState.kind === "sending"
+              ? "Creating draft…"
+              : draftState.kind === "done"
+              ? "Draft created — click to open again"
+              : draftState.kind === "error"
+              ? `Draft failed: ${draftState.msg}`
+              : "Create Gmail draft"
+          }
+        >
+          {draftState.kind === "done" ? CHECK_ICON : MAIL_ICON}
+        </button>
+      )}
       <a
         href={fileUrl}
         download={getFileName(filePath)}

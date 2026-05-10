@@ -151,3 +151,13 @@ body {
   border-top: 1px solid var(--th-border);
   margin: 16px 0;
 }
+
+/* Hide native disclosure markers on the JSONL chat's collapsible rows.
+ * Tailwind's marker: variant doesn't apply to <summary> in all engines, so
+ * we suppress with both standard list-style and the WebKit pseudo. */
+details > summary {
+  list-style: none;
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}

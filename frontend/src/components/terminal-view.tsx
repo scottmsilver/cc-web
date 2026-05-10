@@ -37,8 +37,7 @@ export function TerminalView({
           cursor: getComputedStyle(document.documentElement).getPropertyValue("--th-accent").trim() || "#e07a5f",
           selectionBackground: "rgba(255,255,255,0.15)",
         },
-        cursorBlink: false,
-        disableStdin: true,
+        cursorBlink: true,
         scrollback: 10000,
         convertEol: true,
       });
@@ -78,6 +77,12 @@ export function TerminalView({
       ws.onerror = () => {
         if (!disposed) setStatus("disconnected");
       };
+
+      // Forward user keystrokes to the server (xterm encodes special keys
+      // as ANSI sequences; tmux receives them literally).
+      term.onData((data) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(data);
+      });
 
       // Handle resize
       const ro = new ResizeObserver(() => {

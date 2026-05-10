@@ -35,11 +35,21 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import libtmux
 
 from progress import derive_progress_snapshot, normalize_jsonl_entries
+
+if TYPE_CHECKING:
+    from bhatti_session import BhattiSession  # type: ignore
+
+    Session = Union["CCSession", "BhattiSession"]
+else:
+    # Runtime alias used in annotations and serialization. Importing
+    # ``BhattiSession`` lazily (only when backend == "bhatti") avoids
+    # hard-failing when the optional ``bhatti_session`` module isn't present.
+    Session = Any
 
 logger = logging.getLogger("cchost")
 
@@ -107,6 +117,9 @@ class CCSession:
     working_dir: str
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     owner_email: str = ""
+    # Backend implementation marker; "tmux" is the historical default.
+    # BhattiSession sets ``backend = "bhatti"`` on its own instances.
+    backend: str = "tmux"
     _tmux_session: Optional[libtmux.Session] = field(default=None, repr=False)
     _host: Optional["CCHost"] = field(default=None, repr=False)
     _jsonl_path: Optional[str] = field(default=None, repr=False)
@@ -1554,12 +1567,18 @@ class CCHost:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         manifest = {}
         for sid, session in self._sessions.items():
-            manifest[sid] = {
+            entry: dict[str, Any] = {
                 "working_dir": session.working_dir,
-                "claude_session_id": session._claude_session_id,
+                "claude_session_id": getattr(session, "_claude_session_id", None),
                 "created_at": session.created_at.isoformat(),
-                "owner_email": session.owner_email,
+                "owner_email": getattr(session, "owner_email", ""),
+                "backend": getattr(session, "backend", "tmux"),
             }
+            # Persist BhattiSession's vm_name so rediscovery uses the same VM.
+            vm_name = getattr(session, "vm_name", None)
+            if vm_name:
+                entry["vm_name"] = vm_name
+            manifest[sid] = entry
         # Atomic write: write to temp file then rename
         tmp_path = path + ".tmp"
         with open(tmp_path, "w") as f:
@@ -1578,7 +1597,11 @@ class CCHost:
             if session_id in self._sessions:
                 continue  # already rediscovered from tmux
             working_dir = meta.get("working_dir", "/tmp")
-            if not os.path.isdir(working_dir):
+            # For bhatti-backed sessions ``working_dir`` is a path inside the
+            # VM (e.g. ``/workspace``) which has no meaning on the host. Only
+            # prune on missing host dir for tmux sessions.
+            backend_for_prune = (meta.get("backend") or "tmux").lower()
+            if backend_for_prune == "tmux" and not os.path.isdir(working_dir):
                 logger.info("Pruning dormant session %s — working_dir %s gone", session_id, working_dir)
                 pruned_any = True
                 continue
@@ -1591,11 +1614,51 @@ class CCHost:
             if owner_email is None:
                 # Legacy record — migrate using env-var fallback.
                 owner_email = _legacy_owner_email()
+            # Manifest entries without a ``backend`` field predate this
+            # selector; treat them as the historical "tmux" backend.
+            backend = (meta.get("backend") or "tmux").lower()
+            if backend == "bhatti":
+                try:
+                    from bhatti_session import BhattiSession  # type: ignore
+
+                    # Lazy construction: don't start the VM here. ``_start``
+                    # is deferred until the first public method that actually
+                    # needs the VM, so a stale manifest entry (VM destroyed
+                    # out-of-band) doesn't block server cold-start for
+                    # ``_READY_TIMEOUT_SEC`` per session. The lazy path also
+                    # raises ``BhattiSessionStale`` instead of silently
+                    # auto-recreating the VM with no claude continuity.
+                    bs = BhattiSession(
+                        name=session_id,
+                        working_dir=working_dir,
+                        vm_name=meta.get("vm_name"),
+                        lazy_start=True,
+                    )
+                    # Carry forward identity fields from the manifest so the
+                    # session shows the same owner/created_at as before the
+                    # restart. Without this, BhattiSession.__init__ resets
+                    # owner_email="" and created_at=now, breaking per-user
+                    # filtering and shifting the Created-At column.
+                    bs.owner_email = owner_email
+                    bs.created_at = created_at
+                    self._sessions[session_id] = bs
+                    continue
+                except Exception as e:
+                    # With lazy_start=True the only failures here are
+                    # construction-time issues (bad working_dir, bhatti_client
+                    # missing, etc.) — not _start() timeouts.
+                    logger.warning(
+                        "Skipping bhatti session %s during rediscover: %s",
+                        session_id,
+                        e,
+                    )
+                    continue
             self._sessions[session_id] = CCSession(
                 id=session_id,
                 working_dir=working_dir,
                 created_at=created_at,
                 owner_email=owner_email,
+                backend="tmux",
                 _tmux_session=None,  # dormant — no tmux process
                 _host=self,
                 _claude_session_id=meta.get("claude_session_id"),
@@ -1604,7 +1667,7 @@ class CCHost:
             self._save_manifest()  # remove skipped entries from disk
         logger.info(
             "Loaded %d dormant sessions from manifest",
-            sum(1 for s in self._sessions.values() if s._tmux_session is None),
+            sum(1 for s in self._sessions.values() if getattr(s, "_tmux_session", None) is None),
         )
 
     # ------------------------------------------------------------------
@@ -1662,23 +1725,55 @@ class CCHost:
         working_dir: str = "/tmp",
         wait_ready: bool = True,
         owner_email: str = "",
-    ) -> CCSession:
+        *,
+        backend: str = "tmux",
+    ) -> Session:
         """Create a new Claude Code session.
 
         ``owner_email`` is stored on the session and persisted to the manifest
         so it can be used by ``list_for_user`` / ``get_for_user`` to scope
         access. Defaults to empty string for legacy callers; empty-owner
         sessions are invisible to per-user lookups.
+
+        ``backend`` selects the runtime: ``"tmux"`` (default, original
+        libtmux-backed CCSession) or ``"bhatti"`` (microVM-backed
+        BhattiSession). Bhatti is imported lazily so it stays an optional dep.
         """
         if session_id in self._sessions:
             raise ValueError(f"Session {session_id} already exists")
-        # Cap only counts LIVE sessions; dormant-on-disk sessions don't consume
-        # tmux/memory and shouldn't block new conversations.
-        active = sum(1 for s in self._sessions.values() if s._tmux_session is not None)
-        if active >= self._max_sessions:
-            raise RuntimeError(f"Max sessions ({self._max_sessions}) reached")
         if not re.match(r"^[a-zA-Z0-9_-]+$", session_id):
             raise ValueError(f"Invalid session ID: {session_id}")
+
+        backend = (backend or "tmux").lower()
+        if backend not in ("tmux", "bhatti"):
+            raise ValueError(f"Unknown backend: {backend!r}")
+
+        if backend == "bhatti":
+            # Lazy import so missing bhatti deps don't break the tmux path.
+            from bhatti_session import BhattiSession  # type: ignore
+
+            # Bhatti VMs always use ``/workspace`` *inside* the VM regardless
+            # of the caller's host-side ``working_dir`` (e.g. a topic dir
+            # like ``/home/ssilver/cchost-topics/foo``). The VM's filesystem
+            # is fully isolated; the host's topic dir doesn't exist inside.
+            # The init script runs as ``lohar`` (uid 1000), so ``mkdir -p
+            # /home/ssilver/...`` would fail and silently kill bring-up.
+            session = BhattiSession(
+                name=session_id,
+                working_dir="/workspace",
+            )
+            # BhattiSession exposes owner_email as a plain attribute (set in
+            # __init__), so a direct assignment is reliable; no try/except.
+            session.owner_email = (owner_email or "").lower()
+            self._sessions[session_id] = session
+            self._save_manifest()
+            return session
+
+        # Cap only counts LIVE sessions; dormant-on-disk sessions don't consume
+        # tmux/memory and shouldn't block new conversations.
+        active = sum(1 for s in self._sessions.values() if getattr(s, "_tmux_session", None) is not None)
+        if active >= self._max_sessions:
+            raise RuntimeError(f"Max sessions ({self._max_sessions}) reached")
 
         os.makedirs(working_dir, exist_ok=True)
         tmux_name = f"cchost-{session_id}"
@@ -1697,6 +1792,7 @@ class CCHost:
             id=session_id,
             working_dir=working_dir,
             owner_email=(owner_email or "").lower(),
+            backend="tmux",
             _tmux_session=tmux_session,
             _host=self,
         )
@@ -1711,10 +1807,14 @@ class CCHost:
 
         return session
 
-    def get(self, session_id: str) -> CCSession:
+    def get(self, session_id: str) -> Session:
         if session_id not in self._sessions:
             raise KeyError(f"Session {session_id} not found")
         session = self._sessions[session_id]
+        # BhattiSession owns its own lifecycle; skip the tmux liveness/resume
+        # path entirely for non-tmux backends.
+        if getattr(session, "backend", "tmux") != "tmux":
+            return session
         # Detect tmux session that got killed externally (e.g. tmux kill-session,
         # reboot). Treat it as dormant so we re-resume instead of sending to a
         # dead pane.
@@ -1730,10 +1830,10 @@ class CCHost:
             self._save_manifest()  # update claude_session_id after resume
         return session
 
-    def list(self) -> list[CCSession]:
+    def list(self) -> "list[Session]":
         return list(self._sessions.values())
 
-    def list_for_user(self, email: str) -> "list[CCSession]":
+    def list_for_user(self, email: str) -> "list[Session]":
         """Return sessions owned by ``email`` (case-insensitive).
 
         Sessions with an empty ``owner_email`` (e.g. unmigrated legacy records
@@ -1742,9 +1842,9 @@ class CCHost:
         target = (email or "").lower()
         if not target:
             return []
-        return [s for s in self._sessions.values() if (s.owner_email or "").lower() == target]
+        return [s for s in self._sessions.values() if (getattr(s, "owner_email", "") or "").lower() == target]
 
-    def get_for_user(self, session_id: str, email: str) -> CCSession:
+    def get_for_user(self, session_id: str, email: str) -> Session:
         """Return the session ``session_id`` if it exists AND ``email`` owns it.
 
         Raises:
@@ -1755,7 +1855,8 @@ class CCHost:
         if session_id not in self._sessions:
             raise KeyError(f"Session {session_id} not found")
         session = self._sessions[session_id]
-        if (session.owner_email or "").lower() != (email or "").lower() or not (email or "").strip():
+        owner = (getattr(session, "owner_email", "") or "").lower()
+        if owner != (email or "").lower() or not (email or "").strip():
             raise PermissionError(f"User {email!r} does not own session {session_id!r}")
         # Reuse the same lazy-resume + tmux-liveness path as get().
         return self.get(session_id)
@@ -1823,20 +1924,29 @@ class TopicManager:
         return metadata
 
     def list_topics(self) -> list[dict]:
-        """List all topics with their metadata."""
+        """List all topics, sorted by last activity (most recent first).
+
+        "Last activity" = max(conversation.started_at) on the topic, falling
+        back to the topic's own ``created_at`` for empty topics. We also
+        write that value back as ``last_activity`` on each returned dict so
+        the frontend can render a "5 minutes ago" hint without recomputing.
+        """
         topics: list[dict] = []
         if not os.path.isdir(TOPICS_DIR):
             return topics
-        for entry in sorted(os.listdir(TOPICS_DIR)):
+        for entry in os.listdir(TOPICS_DIR):
             topic_dir = os.path.join(TOPICS_DIR, entry)
             if not os.path.isdir(topic_dir):
                 continue
             try:
                 metadata = self._read_metadata(topic_dir)
-                topics.append(metadata)
             except (json.JSONDecodeError, OSError, KeyError):
                 logger.debug("Skipping corrupt topic dir: %s", topic_dir)
                 continue
+            conv_times = [c.get("started_at") for c in metadata.get("conversations", []) if c.get("started_at")]
+            metadata["last_activity"] = max(conv_times) if conv_times else metadata.get("created_at", "")
+            topics.append(metadata)
+        topics.sort(key=lambda t: t.get("last_activity") or "", reverse=True)
         return topics
 
     def get_topic(self, slug: str) -> dict:
@@ -1892,13 +2002,21 @@ class TopicManager:
 
         shutil.rmtree(topic_dir)
 
-    def start_conversation(self, slug: str, owner_email: str = "") -> CCSession:
+    def start_conversation(
+        self,
+        slug: str,
+        owner_email: str = "",
+        *,
+        backend: str = "tmux",
+    ) -> Session:
         """Start a new conversation in the topic. Stops any active conversation first.
 
         ``owner_email`` is forwarded to the underlying ``CCHost.create`` so the
         new session is owned by the same user as the topic. Defaults to empty
         string for legacy callers; if not provided, the topic's stored
         ``owner_email`` is used as a fallback so per-user filtering still works.
+
+        ``backend`` selects ``"tmux"`` (default) or ``"bhatti"``.
         """
         topic = self.get_topic(slug)  # validates slug
         topic_dir = self._validate_slug(slug)
@@ -1921,23 +2039,29 @@ class TopicManager:
 
         # Create new session with topic dir as working_dir
         conv_id = f"conv-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-        session = self.host.create(conv_id, working_dir=topic_dir, owner_email=effective_owner)
+        session = self.host.create(
+            conv_id,
+            working_dir=topic_dir,
+            owner_email=effective_owner,
+            backend=backend,
+        )
 
         # Record conversation in metadata
         topic["conversations"].append(
             {
                 "id": conv_id,
                 "session_id": session.id,
-                "claude_session_id": session._claude_session_id,
+                "claude_session_id": getattr(session, "_claude_session_id", None),
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "title": "",
                 "status": "active",
+                "backend": getattr(session, "backend", "tmux"),
             }
         )
         self._write_metadata(topic_dir, topic)
         return session
 
-    def resume_conversation(self, slug: str, conv_id: str) -> CCSession:
+    def resume_conversation(self, slug: str, conv_id: str) -> Session:
         """Resume a previous conversation. The session must exist in CCHost."""
         topic = self.get_topic(slug)
         conv = next((c for c in topic["conversations"] if c["id"] == conv_id), None)

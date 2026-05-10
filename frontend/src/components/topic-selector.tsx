@@ -3,6 +3,21 @@
 import { useRef, useEffect, useState } from "react";
 import type { Topic } from "@/lib/types";
 
+/** Render a short relative time, e.g. "5m ago", "3h ago", "2d ago", "Apr 14".
+ *  Falls back to empty string for missing/invalid input. */
+function relativeTime(iso: string | undefined): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const diffSec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (diffSec < 60) return "just now";
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+  if (diffSec < 86400 * 7) return `${Math.floor(diffSec / 86400)}d ago`;
+  // Older: show absolute month/day so it's still readable.
+  return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 export type SessionState =
   | "working"
   | "awaiting_question"
@@ -20,8 +35,10 @@ type TopicSelectorProps = {
    * nothing (e.g. stale topic conv records).
    */
   sessionStates?: Record<string, SessionState>;
+  /** Map session_id → backend ("tmux" | "bhatti"). Drives the VM badge. */
+  sessionBackends?: Record<string, "tmux" | "bhatti">;
   onSelectTopic: (slug: string, sessionId: string) => void;
-  onCreateTopic: (name: string) => void;
+  onCreateTopic: (name: string, options?: { backend?: "tmux" | "bhatti" }) => Promise<void> | void;
   onDeleteTopic: (slug: string) => void;
 };
 
@@ -41,7 +58,13 @@ const STATE_DISPLAY: Record<SessionState, { label: string; dot: string; title: s
   dormant: { label: "dormant", dot: "bg-th-text-faint", title: "Dormant — will resume on next message" },
 };
 
-function StatePill({ state }: { state: SessionState | undefined }) {
+function StatePill({
+  state,
+  backend,
+}: {
+  state: SessionState | undefined;
+  backend?: "tmux" | "bhatti";
+}) {
   if (!state) return null;
   const meta = STATE_DISPLAY[state];
   return (
@@ -51,6 +74,9 @@ function StatePill({ state }: { state: SessionState | undefined }) {
     >
       <span className={`inline-block h-1.5 w-1.5 rounded-full ${meta.dot}`} />
       {meta.label}
+      {backend === "bhatti" && (
+        <span className="ml-1 text-[9px] text-th-text-faint" title="Running in isolated VM">VM</span>
+      )}
     </span>
   );
 }
@@ -60,6 +86,7 @@ export function TopicSelector({
   activeTopic,
   activeSession,
   sessionStates,
+  sessionBackends,
   onSelectTopic,
   onCreateTopic,
   onDeleteTopic,
@@ -68,21 +95,38 @@ export function TopicSelector({
   const [expandedTopic, setExpandedTopic] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  const [useVm, setUseVm] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
+      // Don't close mid-submit — topic creation is a multi-step server call
+      // (create topic, then start a conversation/spawn claude). Closing the
+      // form before it completes drops the user into a half-state where the
+      // first message they type races with handleNewTopic and may seed a
+      // duplicate auto-named topic via ensureSession.
+      if (submitting) return;
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setOpen(false);
         setExpandedTopic(null);
+        setCreating(false);
+        setNewName("");
+        setUseVm(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+  }, [submitting]);
 
   const activeTopicObj = topics.find((t) => t.slug === activeTopic);
+  // The active session's backend, if known. Drives the always-visible
+  // "VM" badge on the topic chooser so the user can see at a glance whether
+  // the current conversation runs in a bhatti microVM.
+  const activeBackend: "tmux" | "bhatti" | undefined =
+    activeSession ? sessionBackends?.[activeSession] : undefined;
+  const activeIsVm = activeBackend === "bhatti";
 
   return (
     <div className="relative" ref={menuRef}>
@@ -90,8 +134,18 @@ export function TopicSelector({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="true"
         aria-expanded={open}
-        className="flex items-center gap-1.5 rounded-lg border border-th-border px-3 py-1.5 text-xs text-th-text transition-colors hover:border-th-accent hover:text-th-text"
+        title={activeIsVm ? "Running in isolated VM (bhatti)" : undefined}
+        className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs text-th-text transition-colors hover:text-th-text ${
+          activeIsVm
+            ? "border-th-accent bg-th-accent/10 hover:border-th-accent"
+            : "border-th-border hover:border-th-accent"
+        }`}
       >
+        {activeIsVm && (
+          <span className="rounded bg-th-accent px-1.5 py-0.5 text-[10px] font-bold text-white tracking-wide">
+            VM
+          </span>
+        )}
         <span className="max-w-[200px] truncate transition-opacity duration-500">
           {activeTopicObj ? activeTopicObj.name : "New topic"}
         </span>
@@ -110,36 +164,61 @@ export function TopicSelector({
         <div className="absolute right-0 top-full z-40 mt-1 w-80 rounded-lg border border-th-border bg-th-bg shadow-xl">
           {creating ? (
             <form
-              className="flex items-center gap-2 border-b border-th-border px-3 py-2"
-              onSubmit={(e) => {
+              className="flex flex-col gap-2 border-b border-th-border px-3 py-2"
+              onSubmit={async (e) => {
                 e.preventDefault();
-                if (newName.trim()) {
-                  onCreateTopic(newName.trim());
+                const trimmed = newName.trim();
+                if (!trimmed || submitting) return;
+                setSubmitting(true);
+                try {
+                  await onCreateTopic(trimmed, {
+                    backend: useVm ? "bhatti" : "tmux",
+                  });
+                  // Only close on success — leave the form open on failure
+                  // so the user can retry without retyping the name.
                   setCreating(false);
                   setNewName("");
+                  setUseVm(false);
                   setOpen(false);
+                } catch (err) {
+                  console.warn("Topic create failed:", err);
+                } finally {
+                  setSubmitting(false);
                 }
               }}
             >
-              <input
-                ref={nameInputRef}
-                type="text"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                placeholder="Topic name..."
-                autoFocus
-                className="flex-1 rounded border border-th-border bg-th-bg px-2 py-1.5 text-sm text-th-text placeholder:text-th-text-faint focus:border-th-accent focus:outline-none"
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") { setCreating(false); setNewName(""); }
-                }}
-              />
-              <button
-                type="submit"
-                disabled={!newName.trim()}
-                className="rounded bg-th-accent px-2.5 py-1.5 text-xs font-medium text-white hover:bg-th-accent-hover disabled:opacity-40"
-              >
-                Create
-              </button>
+              <div className="flex items-center gap-2">
+                <input
+                  ref={nameInputRef}
+                  type="text"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  placeholder="Topic name..."
+                  autoFocus
+                  disabled={submitting}
+                  className="flex-1 rounded border border-th-border bg-th-bg px-2 py-1.5 text-sm text-th-text placeholder:text-th-text-faint focus:border-th-accent focus:outline-none disabled:opacity-60"
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape" && !submitting) { setCreating(false); setNewName(""); setUseVm(false); }
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={!newName.trim() || submitting}
+                  className="rounded bg-th-accent px-2.5 py-1.5 text-xs font-medium text-white hover:bg-th-accent-hover disabled:opacity-40"
+                >
+                  {submitting ? "Creating…" : "Create"}
+                </button>
+              </div>
+              <label className="flex items-center gap-1.5 text-xs text-th-text-muted cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={useVm}
+                  onChange={(e) => setUseVm(e.target.checked)}
+                  disabled={submitting}
+                  className="cursor-pointer"
+                />
+                Run in isolated VM (experimental)
+              </label>
             </form>
           ) : (
             <button
@@ -190,14 +269,17 @@ export function TopicSelector({
                         {(() => {
                           const latest = topic.conversations[topic.conversations.length - 1];
                           const s = latest && sessionStates?.[latest.session_id];
-                          return s ? <StatePill state={s} /> : null;
+                          const b = latest && sessionBackends?.[latest.session_id];
+                          return s ? <StatePill state={s} backend={b} /> : null;
                         })()}
                       </div>
                       <div className="truncate text-xs text-th-text-faint">
-                        {topic.conversations.length}{" "}
-                        {topic.conversations.length === 1
-                          ? "conversation"
-                          : "conversations"}
+                        {(() => {
+                          const rel = relativeTime(topic.last_activity || topic.created_at);
+                          const count = topic.conversations.length;
+                          const label = `${count} ${count === 1 ? "conversation" : "conversations"}`;
+                          return rel ? `${rel} · ${label}` : label;
+                        })()}
                       </div>
                     </button>
                     {/* Expand/collapse chevron */}
@@ -258,7 +340,10 @@ export function TopicSelector({
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
                                 <span className="truncate">{conv.title || conv.id}</span>
-                                <StatePill state={sessionStates?.[conv.session_id]} />
+                                <StatePill
+                                  state={sessionStates?.[conv.session_id]}
+                                  backend={sessionBackends?.[conv.session_id]}
+                                />
                               </div>
                               <div className="truncate text-th-text-faint">
                                 {conv.status}

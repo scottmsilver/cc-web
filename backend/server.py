@@ -129,6 +129,7 @@ class SessionInfo(BaseModel):
     created_at: str
     title: str = ""
     status: str = ""
+    backend: str = "tmux"
 
 
 class QuestionOptionResponse(BaseModel):
@@ -479,7 +480,7 @@ def list_sessions(request: Request):
     email = _require_email(request)
     results = []
     for s in host.list_for_user(email):
-        summary = s.summary()
+        summary = s.summary() if hasattr(s, "summary") else {}
         results.append(
             SessionInfo(
                 id=s.id,
@@ -488,6 +489,7 @@ def list_sessions(request: Request):
                 created_at=s.created_at.isoformat(),
                 title=summary.get("title", ""),
                 status=summary.get("status", ""),
+                backend=getattr(s, "backend", "tmux"),
             )
         )
     return results
@@ -499,7 +501,7 @@ def get_session(session_id: str, request: Request):
     try:
         # Note: get_for_user() triggers lazy resume for dormant sessions
         s = host.get_for_user(session_id, email)
-        summary = s.summary()
+        summary = s.summary() if hasattr(s, "summary") else {}
         return SessionInfo(
             id=s.id,
             working_dir=s.working_dir,
@@ -507,6 +509,7 @@ def get_session(session_id: str, request: Request):
             created_at=s.created_at.isoformat(),
             title=summary.get("title", ""),
             status=summary.get("status", ""),
+            backend=getattr(s, "backend", "tmux"),
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -1087,11 +1090,20 @@ _MAX_UPLOAD_BYTES = int(os.environ.get("CCHOST_MAX_UPLOAD_BYTES", 100 * 1024 * 1
 
 @app.post("/api/sessions/{session_id}/upload")
 async def upload_file(session_id: str, request: Request):
-    """Upload a file to the session's working directory."""
+    """Upload a file to the session's working directory.
+
+    For tmux sessions ``working_dir`` is on the host filesystem and we
+    write directly. For bhatti sessions ``working_dir`` is the in-VM path
+    (``/workspace``); writes have to go through ``BhattiClient.write_file``
+    or the request 500s with ``PermissionError`` on the host's missing
+    ``/workspace`` dir.
+    """
 
     email = _require_email(request)
     session = _get_session_or_404(session_id, email)
-    os.makedirs(session.working_dir, exist_ok=True)
+    is_bhatti = getattr(session, "backend", "tmux") == "bhatti"
+    if not is_bhatti:
+        os.makedirs(session.working_dir, exist_ok=True)
 
     # Parse multipart form data
     form = await request.form()
@@ -1102,7 +1114,6 @@ async def upload_file(session_id: str, request: Request):
             safe_name = os.path.basename(file.filename)
             if not safe_name or ".." in safe_name:
                 raise HTTPException(status_code=400, detail=f"Invalid filename: {file.filename}")
-            dest = os.path.join(session.working_dir, safe_name)
             content = await file.read()
             size = len(content)
             if size > _MAX_UPLOAD_BYTES:
@@ -1110,10 +1121,16 @@ async def upload_file(session_id: str, request: Request):
                     status_code=413,
                     detail=f"File {safe_name} exceeds max upload size ({_MAX_UPLOAD_BYTES} bytes)",
                 )
-            with open(dest, "wb") as f:
-                f.write(content)
+            if is_bhatti:
+                vm_path = f"{session.working_dir}/{safe_name}"
+                session._client.write_file(session.vm_name, vm_path, content)  # type: ignore[attr-defined]
+                logger.info("Uploaded %s (%d bytes) to bhatti VM %s:%s", safe_name, size, session.vm_name, vm_path)
+            else:
+                dest = os.path.join(session.working_dir, safe_name)
+                with open(dest, "wb") as f:
+                    f.write(content)
+                logger.info("Uploaded %s (%d bytes) to %s", safe_name, size, dest)
             uploaded.append(safe_name)
-            logger.info("Uploaded %s (%d bytes) to %s", safe_name, size, dest)
 
     if not uploaded:
         logger.warning("Upload request for session %s had no files", session_id)
@@ -1278,6 +1295,15 @@ class CreateTopicRequest(BaseModel):
     name: str
 
 
+class StartConversationRequest(BaseModel):
+    """Optional body for POST /api/topics/{slug}/conversations.
+
+    ``backend`` selects the runtime: ``"tmux"`` (default) or ``"bhatti"``.
+    """
+
+    backend: str = "tmux"
+
+
 class TopicConversationInfo(BaseModel):
     id: str
     session_id: str
@@ -1290,6 +1316,7 @@ class TopicInfo(BaseModel):
     name: str
     slug: str
     created_at: str
+    last_activity: str = ""
     conversations: list[TopicConversationInfo] = []
 
 
@@ -1338,8 +1365,17 @@ def delete_topic(slug: str, request: Request):
 
 
 @app.post("/api/topics/{slug}/conversations")
-def start_topic_conversation(slug: str, request: Request):
+def start_topic_conversation(
+    slug: str,
+    request: Request,
+    req: Optional[StartConversationRequest] = None,
+):
     email = _require_email(request)
+    # Validate backend up-front; default to tmux for legacy clients that
+    # POST without a body.
+    backend = (req.backend if req else "tmux").lower()
+    if backend not in ("tmux", "bhatti"):
+        raise HTTPException(status_code=400, detail=f"Unknown backend: {backend!r}")
     # Verify ownership before starting a conversation under this topic.
     try:
         topic_manager.get_for_user(slug, email)
@@ -1348,10 +1384,14 @@ def start_topic_conversation(slug: str, request: Request):
     except PermissionError:
         raise HTTPException(status_code=403, detail="not your topic")
     try:
-        session = topic_manager.start_conversation(slug)
+        session = topic_manager.start_conversation(slug, backend=backend)
         topic = topic_manager.get_for_user(slug, email)
         conv = topic["conversations"][-1]
-        return {"session_id": session.id, "conversation_id": conv["id"]}
+        return {
+            "session_id": session.id,
+            "conversation_id": conv["id"],
+            "backend": getattr(session, "backend", "tmux"),
+        }
     except KeyError:
         raise HTTPException(status_code=404, detail="Topic not found")
 

@@ -612,7 +612,7 @@ function SystemEventRow({ entry }: { entry: JsonlEntry }) {
     if (hooks.length === 0 && errors.length === 0) return null;
     return (
       <DetailLine detail={r}>
-        <span className="uppercase tracking-wider mr-1">hooks</span>
+        <span className="uppercase tracking-wider mr-1 after:content-['_']">hooks</span>
         {hooks.length}
         {hooks.length > 0 && ` · ${hooks.map((h) => `${(h.command || "").split("/").pop()} ${h.durationMs}ms`).join(", ")}`}
         {errors.length > 0 && <span className="text-th-error-text"> · {errors.length} error{errors.length === 1 ? "" : "s"}</span>}
@@ -664,7 +664,7 @@ function EventRow({ entry }: { entry: JsonlEntry }) {
     if (!title) return null;
     return (
       <DetailLine detail={r}>
-        <span className="uppercase tracking-wider mr-1">{t === "custom-title" ? "title" : "agent"}</span>
+        <span className="uppercase tracking-wider mr-1 after:content-['_']">{t === "custom-title" ? "title" : "agent"}</span>
         <span className="text-th-text-muted">{title}</span>
       </DetailLine>
     );
@@ -675,7 +675,7 @@ function EventRow({ entry }: { entry: JsonlEntry }) {
     if (!w) return null;
     return (
       <DetailLine detail={r}>
-        <span className="uppercase tracking-wider mr-1">worktree</span>
+        <span className="uppercase tracking-wider mr-1 after:content-['_']">worktree</span>
         <span className="font-mono text-th-text-muted">{w.worktreeName}</span>
         {w.worktreeBranch && <span className="text-th-text-faint"> · {w.worktreeBranch}</span>}
       </DetailLine>
@@ -686,7 +686,7 @@ function EventRow({ entry }: { entry: JsonlEntry }) {
     const mode = String(r.permissionMode || "");
     return (
       <DetailLine detail={r}>
-        <span className="uppercase tracking-wider mr-1">permission</span>
+        <span className="uppercase tracking-wider mr-1 after:content-['_']">permission</span>
         <span className="font-mono text-th-text-muted">{mode}</span>
       </DetailLine>
     );
@@ -697,7 +697,7 @@ function EventRow({ entry }: { entry: JsonlEntry }) {
     const content = String(r.content || "");
     return (
       <DetailLine detail={r}>
-        <span className="uppercase tracking-wider mr-1">queue {op}</span>
+        <span className="uppercase tracking-wider mr-1 after:content-['_']">queue {op}</span>
         <span className="text-th-text-muted">{content.substring(0, 100)}</span>
       </DetailLine>
     );
@@ -709,7 +709,7 @@ function EventRow({ entry }: { entry: JsonlEntry }) {
     if (n === 0) return null;
     return (
       <DetailLine detail={r}>
-        <span className="uppercase tracking-wider mr-1">snapshot</span>
+        <span className="uppercase tracking-wider mr-1 after:content-['_']">snapshot</span>
         {n} file{n === 1 ? "" : "s"}
       </DetailLine>
     );
@@ -721,7 +721,7 @@ function EventRow({ entry }: { entry: JsonlEntry }) {
     const label = d.hookName || d.hookEvent || d.type || "progress";
     return (
       <DetailLine detail={r} className="text-[10px] text-th-text-faint py-px opacity-70">
-        <span className="uppercase tracking-wider mr-1">hook</span>
+        <span className="uppercase tracking-wider mr-1 after:content-['_']">hook</span>
         {label}{d.command ? ` · ${d.command}` : ""}
       </DetailLine>
     );

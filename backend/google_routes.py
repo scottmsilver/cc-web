@@ -575,10 +575,33 @@ def download_thread_attachments(request: Request, session_id: str, thread_id: st
 
     creds = _creds_for(request, "gmail.readonly")
 
-    inbox_dir = os.path.join(session.working_dir, "inbox", thread_id)
-    os.makedirs(inbox_dir, exist_ok=True)
+    # ``session.working_dir`` is interpreted as a path inside the session's
+    # filesystem. For tmux sessions that's the host filesystem. For bhatti
+    # sessions it's the in-VM /workspace which doesn't exist on the host;
+    # writes have to go through ``BhattiClient.write_file``. We download
+    # to a host tempdir either way and then either move or upload.
+    is_bhatti = getattr(session, "backend", "tmux") == "bhatti"
 
-    files = _download_thread_attachments(creds, thread_id, inbox_dir)
+    if is_bhatti:
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix=f"gmail-dl-{thread_id}-") as staging:
+            inbox_dir = os.path.join(staging, "inbox", thread_id)
+            os.makedirs(inbox_dir, exist_ok=True)
+            files = _download_thread_attachments(creds, thread_id, inbox_dir)
+            # Push every staged file into the VM at the matching path under
+            # session.working_dir (which is /workspace inside the VM).
+            client = session._client  # type: ignore[attr-defined]
+            vm_name = session.vm_name  # type: ignore[attr-defined]
+            for fname in files:
+                local_path = os.path.join(inbox_dir, fname)
+                vm_path = f"{session.working_dir}/inbox/{thread_id}/{fname}"
+                with open(local_path, "rb") as f:
+                    client.write_file(vm_name, vm_path, f.read())
+    else:
+        inbox_dir = os.path.join(session.working_dir, "inbox", thread_id)
+        os.makedirs(inbox_dir, exist_ok=True)
+        files = _download_thread_attachments(creds, thread_id, inbox_dir)
 
     # Write gmail-source.json for downstream draft threading
     gmail = google_service.build_gmail_service(creds)
@@ -597,24 +620,42 @@ def download_thread_attachments(request: Request, session_id: str, thread_id: st
     for msg in thread_data.get("messages", [])[:1]:
         sender = _get_header(msg.get("payload", {}).get("headers", []), "From")
 
-    source_path = os.path.join(session.working_dir, "gmail-source.json")
-    # Merge with existing gmail-source.json (may have multiple thread selections)
-    existing_source: dict = {}
-    try:
-        with open(source_path) as f:
-            existing_source = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-
-    existing_ids = existing_source.get("thread_ids", [])
-    if thread_id not in existing_ids:
-        existing_ids.append(thread_id)
-    existing_source["thread_ids"] = existing_ids
-    if sender:
-        existing_source["sender"] = sender
-
-    with open(source_path, "w") as f:
-        json.dump(existing_source, f, indent=2)
+    # Merge gmail-source.json (may already exist from a prior thread attach
+    # in this session). Read-merge-write happens in the right place: host fs
+    # for tmux, in-VM via BhattiClient for bhatti.
+    source_rel = "gmail-source.json"
+    if is_bhatti:
+        client = session._client  # type: ignore[attr-defined]
+        vm_name = session.vm_name  # type: ignore[attr-defined]
+        source_vm_path = f"{session.working_dir}/{source_rel}"
+        existing_source: dict = {}
+        try:
+            existing_source = json.loads(client.read_file(vm_name, source_vm_path).decode())
+        except Exception:
+            existing_source = {}
+        existing_ids = existing_source.get("thread_ids", [])
+        if thread_id not in existing_ids:
+            existing_ids.append(thread_id)
+        existing_source["thread_ids"] = existing_ids
+        if sender:
+            existing_source["sender"] = sender
+        client.write_file(vm_name, source_vm_path, json.dumps(existing_source, indent=2).encode())
+    else:
+        source_path = os.path.join(session.working_dir, source_rel)
+        existing_source = {}
+        try:
+            with open(source_path) as f:
+                existing_source = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        existing_ids = existing_source.get("thread_ids", [])
+        if thread_id not in existing_ids:
+            existing_ids.append(thread_id)
+        existing_source["thread_ids"] = existing_ids
+        if sender:
+            existing_source["sender"] = sender
+        with open(source_path, "w") as f:
+            json.dump(existing_source, f, indent=2)
 
     # Mark thread as downloaded
     downloaded = _load_downloaded_threads()

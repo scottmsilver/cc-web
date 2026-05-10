@@ -65,6 +65,7 @@ type SessionRecord = {
   title?: string;
   status?: string;
   state?: string;
+  backend?: "tmux" | "bhatti";
 };
 
 type ConversationEntry = {
@@ -236,12 +237,15 @@ function normalizeSessionRecord(value: unknown): SessionRecord | null {
   }
 
   const v = value as Record<string, unknown>;
+  const backend =
+    v.backend === "tmux" || v.backend === "bhatti" ? v.backend : undefined;
   return {
     id,
     working_dir: typeof v.working_dir === "string" ? v.working_dir : null,
     title: typeof v.title === "string" ? v.title : undefined,
     status: typeof v.status === "string" ? v.status : undefined,
     state: typeof v.state === "string" ? v.state : undefined,
+    backend,
   };
 }
 
@@ -292,6 +296,11 @@ export default function Chat() {
   const [activeSession, setActiveSession] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("chat");
   const [viewingFile, setViewingFile] = useState<string | null>(null);
+  // Per-session RHS state cache: when you switch conversations we want to
+  // restore the same tab + file you had open in that conversation, instead of
+  // resetting to "chat" / null. `prevSessionIdRef` lets us detect transitions.
+  const rhsCacheRef = useRef<Map<string, { tab: TabId; file: string | null }>>(new Map());
+  const prevSessionIdRef = useRef<string | null>(null);
   const [viewingImages, setViewingImages] = useState<{ images: string[]; index: number } | null>(null);
   const [transcriptTasks, setTranscriptTasks] = useState<TranscriptTask[]>([]);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
@@ -323,6 +332,33 @@ export default function Chat() {
   useEffect(() => {
     progressRef.current = progress;
   }, [progress]);
+
+  // Per-session RHS state: save current tab+file under the previous session's
+  // id when activeSession changes, then restore the new session's saved state
+  // (or fall back to defaults). Same-session changes just save through.
+  useEffect(() => {
+    const prev = prevSessionIdRef.current;
+    if (prev !== activeSession) {
+      // Session change: closure still holds the *previous* session's state.
+      if (prev !== null) {
+        rhsCacheRef.current.set(prev, { tab: activeTab, file: viewingFile });
+      }
+      prevSessionIdRef.current = activeSession;
+      if (activeSession) {
+        const saved = rhsCacheRef.current.get(activeSession);
+        setActiveTab(saved?.tab ?? "chat");
+        setViewingFile(saved?.file ?? null);
+      } else {
+        setActiveTab("chat");
+        setViewingFile(null);
+      }
+      return;
+    }
+    // Same session: persist tab/file changes for next time we come back.
+    if (activeSession) {
+      rhsCacheRef.current.set(activeSession, { tab: activeTab, file: viewingFile });
+    }
+  }, [activeSession, activeTab, viewingFile]);
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -472,7 +508,13 @@ export default function Chat() {
     setIsAnswering(false);
     setQueuedMessages([]);
     setGmailSuggestions([]);
-    setGmailDownloads([]);
+    // Do NOT clear gmailDownloads here. handleGmailSelect can call
+    // ensureSession() which causes activeSession to change *during* an
+    // attach flow — clearing here would race with the chip set, leaving
+    // the user with no chip even though files uploaded fine. Topic
+    // switches that genuinely should clear chips (handleSelectTopic /
+    // handleNewTopic / handleDeleteTopic / startNewSessionDraft) clear
+    // gmailDownloads explicitly already.
     setShowGmailPicker(false);
 
     if (skipConversationLoadForSessionRef.current === activeSession) {
@@ -840,16 +882,25 @@ export default function Chat() {
     setActiveTab("chat");
     setIsLoading(false);
     setIsAnswering(false);
+    // Gmail attachment chips belong to the active conversation. When we
+    // discard the draft (or fall through here from handleDeleteTopic), they
+    // must clear too — without this, chips can carry over to a fresh draft
+    // and surprise the next attach with stale state.
+    setGmailDownloads([]);
+    setGmailThreadIds([]);
   };
 
   // ── Topic actions ──
 
-  const handleNewTopic = async (name: string) => {
+  const handleNewTopic = async (
+    name: string,
+    options?: { backend?: "tmux" | "bhatti" },
+  ) => {
     try {
-      const topic = await apiCreateTopic(name);
+      const topic = await apiCreateTopic(name, options);
       await fetchTopics();
       // Start a conversation in the new topic
-      const result = await apiStartTopicConversation(topic.slug);
+      const result = await apiStartTopicConversation(topic.slug, options);
       setActiveTopic(topic.slug);
       setActiveSession(result.session_id);
       activeSessionRef.current = result.session_id;
@@ -869,6 +920,9 @@ export default function Chat() {
       setActiveTab("chat");
     } catch (error) {
       console.warn("Failed to create topic:", error);
+      // Rethrow so the topic-selector form can keep itself open and let the
+      // user retry without retyping the name.
+      throw error;
     }
   };
 
@@ -1078,8 +1132,15 @@ export default function Chat() {
                 )
                 .map((s) => [s.id, s.state])
             )}
+            sessionBackends={Object.fromEntries(
+              sessions
+                .filter((s): s is SessionRecord & { backend: "tmux" | "bhatti" } =>
+                  s.backend === "tmux" || s.backend === "bhatti"
+                )
+                .map((s) => [s.id, s.backend])
+            )}
             onSelectTopic={handleSelectTopic}
-            onCreateTopic={(name) => void handleNewTopic(name)}
+            onCreateTopic={(name, options) => handleNewTopic(name, options)}
             onDeleteTopic={handleDeleteTopic}
           />
           <UserMenu />

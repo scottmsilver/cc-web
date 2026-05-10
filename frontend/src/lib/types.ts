@@ -56,5 +56,6 @@ export type Topic = {
   name: string;
   slug: string;
   created_at: string;
+  last_activity?: string;
   conversations: TopicConversation[];
 };
