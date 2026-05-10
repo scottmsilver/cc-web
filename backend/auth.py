@@ -186,8 +186,15 @@ def auth_login(request: Request, return_url: str = "/"):
     scheme = "https" if request.headers.get("x-forwarded-proto") == "https" else request.url.scheme
     our_callback = f"{scheme}://{host}/api/auth/callback?return={requests.utils.quote(return_url, safe='')}"
     try:
-        # Request profile so we get the user's name + picture for the avatar.
-        broker_url = broker_client.start_url(our_callback, "openid,profile")
+        # Request profile (for avatar) plus the gmail/drive scopes cchost
+        # actually uses — listed in google_service.SCOPES. Asking for them
+        # at sign-in time means Google's consent screen shows the full set
+        # once; otherwise the user signs in fine but every gmail/drive
+        # call later fails because the broker has no token with that scope.
+        from google_service import SCOPES as GOOGLE_SCOPES
+
+        scope = ",".join(["openid", "profile", *GOOGLE_SCOPES])
+        broker_url = broker_client.start_url(our_callback, scope)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=f"broker not configured: {exc}")
     return RedirectResponse(url=broker_url)
